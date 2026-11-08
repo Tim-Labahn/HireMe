@@ -1,0 +1,20 @@
+{
+  "name": "hireme",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Lokal arbeitender Editor für Bewerbungsunterlagen",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test",
+    "build:pdf": "esbuild node_modules/pdfjs-dist/build/pdf.mjs --bundle --format=iife --global-name=pdfjsLib --outfile=vendor/pdfjs/pdf.browser.js --minify && esbuild node_modules/pdfjs-dist/build/pdf.worker.mjs --bundle --format=iife --global-name=pdfjsWorker --outfile=vendor/pdfjs/pdf.worker.browser.js --minify"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12"
+  },
+  "dependencies": {
+    "pdfjs-dist": "4.10.38",
+    "html2pdf.js": "0.10.3",
+    "jszip": "3.10.1",
+    "pdf-lib": "1.17.1"
+  }
+}

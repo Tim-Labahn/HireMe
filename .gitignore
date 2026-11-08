@@ -1,0 +1,12 @@
+node_modules/
+*.pdf
+*.json
+!package.json
+!package-lock.json
+*.zip
+*.png
+*.jpg
+*.jpeg
+*.webp
+.env
+.env.*
