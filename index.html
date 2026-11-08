@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#29265d">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' blob: data:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'">
+  <title>HireMe</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="pdf-import.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">H</span><strong>HireMe</strong><span class="brand-sub">Deine Bewerbung. Dein Stil.</span></div>
+    <div class="top-actions">
+      <button id="pdf-import" class="button secondary">PDF importieren</button>
+      <input id="pdf-file" type="file" accept=".pdf,application/pdf" multiple hidden>
+      <button id="export" class="button secondary">Sicherung exportieren</button>
+      <button id="privacy-settings" class="button secondary">Datenschutz &amp; Hilfe</button>
+      <label class="button secondary" for="import" tabindex="0">Sicherung importieren</label>
+      <input id="import" type="file" accept=".json,application/json" hidden>
+      <button id="print" class="button secondary">Drucken</button>
+      <button id="pdf-download" class="button primary">PDF herunterladen</button>
+    </div>
+  </header>
+  <main>
+    <div class="workspace-header">
+      <div><span class="eyebrow">DEIN ARBEITSBEREICH</span><h1>Deine Unterlagen</h1><p>Direkt im Dokument bearbeiten. Im Titel: Umschalt + Enter für einen Untertitel.</p></div>
+      <div class="document-switch" role="group" aria-label="Dokument auswählen">
+        <button class="document-button active" data-document="resume">Lebenslauf</button>
+        <button class="document-button" data-document="letter">Anschreiben</button>
+        <button class="document-button" data-document="portfolio">Arbeitsproben</button>
+      </div>
+    </div>
+    <div class="tools" aria-label="Gestaltung">
+      <label>Vorlage <select id="template"><option value="modern">Modern</option><option value="classic">Klassisch</option><option value="minimal">Minimalistisch</option></select></label>
+      <label>Schrift <select id="font"><option>Arial</option><option>Georgia</option><option>Verdana</option></select></label>
+      <label>Farbe <input id="color" type="color" aria-label="Akzentfarbe"></label>
+      <span class="tool-divider"></span>
+      <button id="add-section" class="button secondary">+ Abschnitt</button>
+      <button id="add-work" class="button secondary" hidden>+ Arbeitsprobe</button>
+      <button id="edit-recipient" class="button secondary" hidden>Empfängeradresse ausfüllen</button>
+      <label id="photo-label" class="button secondary" for="photo-input" tabindex="0">Foto wählen</label>
+      <input id="photo-input" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+      <button id="remove-photo" class="button secondary">Foto entfernen</button>
+      <label id="photo-width-label">Foto Breite <input id="photo-width" type="range" min="15" max="70"><output id="photo-width-value"></output></label>
+      <label id="photo-height-label">Höhe <input id="photo-height" type="range" min="15" max="70"><output id="photo-height-value"></output></label>
+    </div>
+    <div id="status" role="status" aria-live="polite"></div>
+    <div class="document-area"><article id="paper" class="paper" aria-label="Dokument bearbeiten"></article></div>
+    <p class="hint"><span id="storage-indicator"></span> Zum Drucken das gewünschte Dokument auswählen, im Druckdialog A4 und 100 % wählen sowie Kopf- und Fußzeilen ausschalten.</p>
+  </main>
+  <dialog id="welcome-dialog" aria-labelledby="welcome-title">
+    <form id="welcome-form" class="dialog-content">
+      <span class="eyebrow">WILLKOMMEN BEI HIREME</span>
+      <h2 id="welcome-title">Deine Bewerbung, direkt im Browser</h2>
+      <p>Erstelle Lebenslauf und Anschreiben direkt auf dem Blatt. Über <strong>PDF importieren</strong> kannst du vorhandene Dokumente als Ausgangspunkt verwenden und die erkannten Angaben prüfen.</p>
+      <p>HireMe verarbeitet deine Eingaben und PDFs lokal. Sie werden nicht an einen KI-Dienst hochgeladen. Die Website und ihre Dateien werden beim Besuch vom Hosting-Anbieter geladen; dabei können technische Verbindungsdaten wie deine IP-Adresse anfallen.</p>
+      <fieldset class="storage-choice"><legend>Wie möchtest du arbeiten?</legend>
+        <label><input type="radio" name="storage" value="local" required> <span><strong>Auf diesem Gerät speichern</strong><br>Deine Angaben einschließlich Foto bleiben in diesem Browser, auch nach dem Schließen. Auf gemeinsam genutzten Geräten können andere Personen darauf zugreifen.</span></label>
+        <label><input type="radio" name="storage" value="temporary" required> <span><strong>Nur für diese Sitzung</strong><br>Neue Änderungen bleiben nur im geöffneten Tab und gehen beim Neuladen oder Schließen verloren. Bereits vorhandene lokale Daten werden dadurch nicht gelöscht.</span></label>
+      </fieldset>
+      <p>Erstelle regelmäßig eine <strong>Sicherung</strong>. Die heruntergeladene JSON-Datei enthält deine persönlichen Daten und gegebenenfalls dein Foto. Es werden keine Cookies für die Bewerbung verwendet.</p>
+      <p id="welcome-status" role="status" aria-live="polite"></p>
+      <div class="dialog-actions">
+        <button type="button" class="button secondary" id="delete-local">Gespeicherte Daten löschen</button>
+        <button type="submit" class="button secondary" value="start">Loslegen</button>
+        <button type="submit" class="button primary" value="import">Loslegen &amp; PDF importieren</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="import-dialog">
+    <form method="dialog" class="dialog-content">
+      <div class="dialog-heading"><div><span class="eyebrow">LOKALER PDF-IMPORT</span><h2>Erkennung überprüfen</h2><p id="import-file"></p></div><button class="icon-button" value="skip" aria-label="Diese Datei überspringen">✕</button></div>
+      <p>Die automatische Zuordnung ist ein Vorschlag. Prüfe alle Angaben mit dem Original. Scans ohne auswählbaren Text und Fotos werden nicht erkannt.</p>
+      <label class="dialog-label">Dokumenttyp <select id="pdf-type"><option value="resume">Lebenslauf</option><option value="letter">Anschreiben</option></select></label>
+      <p id="import-summary"></p>
+      <div class="import-columns"><div><h3>Erkannte Angaben</h3><pre id="recognized"></pre></div><div><h3>Gesamter extrahierter Text</h3><pre id="extracted"></pre></div></div>
+      <p class="import-warning">Beim Übernehmen ersetzen erkannte Angaben die entsprechenden bestehenden Felder. Bei einem Lebenslauf werden erkannte Abschnitte und ihre Einträge vollständig ersetzt. Nicht erkannte Felder bleiben erhalten.</p>
+      <div class="dialog-actions"><button class="button secondary" value="abort">Rest abbrechen</button><button class="button secondary" value="skip">Diese Datei überspringen</button><button type="button" class="button primary" id="apply-import">Erkannte Daten übernehmen</button></div>
+    </form>
+  </dialog>
+  <dialog id="recipient-dialog">
+    <form id="recipient-form" class="dialog-content">
+      <div class="dialog-heading"><h2>Empfängeradresse</h2><button type="button" class="icon-button" data-close-dialog="recipient-dialog" aria-label="Schließen">✕</button></div>
+      <p>Die Angaben ersetzen nach Bestätigung das Empfängerfeld im Anschreiben. Den vorhandenen Text siehst du unten.</p>
+      <div class="form-grid">
+        <label>Unternehmen<input name="company" autocomplete="organization"></label>
+        <label>Abteilung / Zusatz<input name="department"></label>
+        <label>Ansprechpartner<input name="contact" placeholder="z. B. Maria Beispiel"></label>
+        <label>Straße und Hausnummer<input name="street" autocomplete="address-line1"></label>
+        <label>Postleitzahl<input name="postal" autocomplete="postal-code"></label>
+        <label>Ort<input name="city" autocomplete="address-level2"></label>
+        <label>Land (optional)<input name="country" autocomplete="country-name"></label>
+        <label>Anrede im Anschreiben<select name="salutation"><option value="keep">Vorhandene Anrede beibehalten</option><option value="general">Sehr geehrte Damen und Herren</option><option value="frau">Sehr geehrte Frau …</option><option value="herr">Sehr geehrter Herr …</option></select></label>
+        <label>Anrede-Name (bei Frau / Herr)<input name="salutationName" placeholder="z. B. Beispiel"></label>
+      </div>
+      <p>Aktuelles Empfängerfeld:</p><pre id="current-recipient"></pre>
+      <p id="recipient-status" role="status" aria-live="polite"></p>
+      <div class="dialog-actions"><button type="button" class="button secondary" data-close-dialog="recipient-dialog">Abbrechen</button><button class="button primary">Übernehmen</button></div>
+    </form>
+  </dialog>
+  <dialog id="download-dialog">
+    <form id="download-form" class="dialog-content">
+      <div class="dialog-heading"><h2>PDF herunterladen</h2><button type="button" class="icon-button" data-close-dialog="download-dialog" aria-label="Schließen">✕</button></div>
+      <p>Die PDFs werden lokal aus der Dokumentansicht als Bildseiten erzeugt; Text ist darin nicht auswählbar. Bitte anschließend Seitenumbrüche und das Brieffenster prüfen.</p>
+      <div class="form-grid">
+        <label>Ausgabe<select name="mode"><option value="combined">Ein gemeinsames PDF</option><option value="separate">Getrennte PDFs als ZIP</option></select></label>
+        <label>Name für Dateinamen<input name="name" required placeholder="Vorname_Nachname"></label>
+      </div>
+      <fieldset class="document-choices"><legend>Dokumente auswählen</legend>
+        <label><input type="checkbox" name="documents" value="letter" checked> Anschreiben</label>
+        <label><input type="checkbox" name="documents" value="resume" checked> Lebenslauf</label>
+        <label><input type="checkbox" name="documents" value="portfolio"> Arbeitsproben</label>
+      </fieldset>
+      <p id="download-status" role="status" aria-live="polite"></p>
+      <div class="dialog-actions"><button type="button" class="button secondary" data-close-dialog="download-dialog">Abbrechen</button><button id="download-submit" class="button primary">Herunterladen</button></div>
+    </form>
+  </dialog>
+</body>
+</html>
