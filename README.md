@@ -10,7 +10,7 @@ Die `index.html` lässt sich auch direkt öffnen. Der PDF-Import nutzt dabei ein
 
 ## Online Nutzen
 
-Das project ist Via Github Pages erreichbar unter **HireMe.timlabahn.de**
+Das project ist Via Github Pages erreichbar unter **http://HireMe.timlabahn.de**
 
 
 ## Bearbeiten und drucken
