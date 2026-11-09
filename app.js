@@ -42,7 +42,7 @@ function parseFields(list) {
   });
 }
 function parseState(data) {
-  if (!isRecord(data) || !isRecord(data.profile) || !isRecord(data.letter) || !isRecord(data.design) || !Array.isArray(data.sections)) throw new Error("Die Datei enthält keine gültige Sicherung.");
+  if (!isRecord(data) || !isRecord(data.profile) || !isRecord(data.letter) || !isRecord(data.design) || !Array.isArray(data.sections)) throw new Error("Die Datei enthält keine gültige Vorlage.");
   const defaults = defaultState();
   const strings = (input, shape) => Object.fromEntries(Object.keys(shape).map(key => {
     if (typeof shape[key] !== "string") return [key, shape[key]];
@@ -96,15 +96,16 @@ function parseState(data) {
 function showStatus() { $("#status").textContent = [saveError, message].filter(Boolean).join(" "); }
 function updateStorageIndicator() {
   $("#storage-indicator").textContent = storageMode === "local"
-    ? "Speicherung: lokal in diesem Browser. Erstelle regelmäßig eine Sicherung."
+    ? "Speicherung: lokal in diesem Browser. Speichere regelmäßig eine Vorlage."
     : "Speicherung: nur in diesem Tab. Beim Neuladen oder Schließen gehen Änderungen verloren.";
 }
 function save() {
   scheduleSnapshot();
+  schedulePreview();
   if (storageMode !== "local") { showStatus(); return; }
   if (loadBlocked) { showStatus(); return; }
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); saveError = ""; }
-  catch (error) { saveError = "Speichern im Browser fehlgeschlagen. Exportiere eine Sicherung und prüfe den verfügbaren Speicherplatz."; console.error(error); }
+  catch (error) { saveError = "Speichern im Browser fehlgeschlagen. Speichere eine Vorlage und prüfe den verfügbaren Speicherplatz."; console.error(error); }
   showStatus();
 }
 function loadSavedState() {
@@ -113,7 +114,7 @@ function loadSavedState() {
     if (saved) state = parseState(JSON.parse(saved));
   } catch (error) {
     console.error(error); loadBlocked = true;
-    saveError = "Die gespeicherten Daten konnten nicht geladen werden. Importiere eine Sicherung; bis dahin werden vorhandene Browserdaten nicht überschrieben.";
+    saveError = "Die gespeicherten Daten konnten nicht geladen werden. Lade eine Vorlage; bis dahin werden vorhandene Browserdaten nicht überschrieben.";
   }
 }
 try {
@@ -170,8 +171,15 @@ function autocorrect(element, typed) {
   if (element.getAttribute("aria-multiline") === "true" && sentenceStart && /^[a-zäöüß]/.test(fixed)) fixed = fixed[0].toUpperCase() + fixed.slice(1);
   if (fixed !== word) node.replaceData(start, word.length, fixed);
 }
-function person(key, placeholder, options) { return editable("profile", key, placeholder, options); }
-function letterField(key, placeholder, options) { return editable("letter", key, placeholder, options); }
+function person(key, placeholder, options = {}) {
+  const tag = options.tag || "span", value = resolve(state.profile[key]);
+  return `<${tag} class="profile-value ${options.className || ""}" role="button" tabindex="0" data-open-profile data-placeholder="${escapeHtml(placeholder)}" aria-label="${escapeHtml(placeholder)} bearbeiten"${!value ? " hidden" : ""}>${escapeHtml(value)}</${tag}>`;
+}
+function letterField(key, placeholder, options = {}) {
+  if (key !== "recipient" && key !== "salutation") return editable("letter", key, placeholder, options);
+  const tag = options.tag || "span";
+  return `<${tag} class="dialog-field ${options.className || ""}" role="button" tabindex="0" data-open-recipient data-placeholder="${escapeHtml(placeholder)}" aria-label="${escapeHtml(placeholder)} bearbeiten">${escapeHtml(resolve(state.letter[key]))}</${tag}>`;
+}
 function fieldHasContent(field) { return Boolean(field.label.trim() || field.value.trim()); }
 function entryHasContent(entry) { return [entry.title, entry.subtitle, entry.date, entry.description].some(value => value.trim()) || (entry.fields || []).some(fieldHasContent); }
 function customField(group, field, index, remove, options = {}) {
@@ -199,9 +207,9 @@ function ratingEditor(rating, section, entry) {
 function renderResume() {
   const d = state.design, p = state.profile;
   return `<header class="resume-header"><div>
-    <div class="resume-name">${person("firstName", "Vorname")} ${person("lastName", "Nachname")}</div>
+    <div class="resume-name"${!p.firstName && !p.lastName ? " hidden" : ""}>${person("firstName", "Vorname")} ${person("lastName", "Nachname")}</div>
     ${person("headline", "Berufsbezeichnung / Profil", { tag: "div", className: "headline block" })}
-    <div class="contact">${person("street", "Straße und Hausnummer")}${person("city", "PLZ und Ort")}${person("email", "E-Mail")}${person("phone", "Telefon")}${person("website", "Website / LinkedIn")}</div>
+    <div class="contact"${!["street", "city", "email", "phone", "website"].some(key => p[key]) ? " hidden" : ""}>${person("street", "Straße und Hausnummer")}${person("city", "PLZ und Ort")}${person("email", "E-Mail")}${person("phone", "Telefon")}${person("website", "Website / LinkedIn")}</div>
     <div class="extra-fields">${state.extras.map((field, i) => customField("extra", field, i, `data-action="remove-extra" data-field="${i}"`)).join("")}<button class="add-entry" data-action="add-extra">+ Feld</button></div>
     </div>${p.photo ? `<img class="photo" src="${p.photo}" alt="Bewerbungsfoto" style="width:${d.photoWidth}mm;height:${d.photoHeight}mm">` : ""}</header>
     <div class="resume-sections">${state.sections.map((section, index) => {
@@ -261,6 +269,11 @@ function render() {
   paper.style.setProperty("--accent", d.color);
   paper.style.setProperty("--doc-font", `"${d.font}", ${d.font === "Georgia" ? "serif" : "sans-serif"}`);
   paper.innerHTML = activeDocument === "resume" ? renderResume() : activeDocument === "letter" ? renderLetter() : renderPortfolio();
+  const header = activeDocument === "resume" ? paper.querySelector(".resume-header") : null;
+  const flow = document.createElement("div");
+  flow.className = "editor-flow";
+  while (header ? header.nextSibling : paper.firstChild) flow.appendChild(header ? header.nextSibling : paper.firstChild);
+  paper.appendChild(flow);
   document.querySelectorAll(".document-button").forEach(button => button.classList.toggle("active", button.dataset.document === activeDocument));
   for (const name of ["template", "font", "color"]) $(`#${name}`).value = d[name];
   for (const dimension of ["width", "height"]) {
@@ -270,7 +283,33 @@ function render() {
   for (const id of ["add-section", "photo-label", "remove-photo", "photo-width-label", "photo-height-label"]) $(`#${id}`).hidden = activeDocument !== "resume";
   $("#add-work").hidden = activeDocument !== "portfolio";
   $("#edit-recipient").hidden = activeDocument !== "letter";
+  $("#edit-subject").hidden = activeDocument !== "letter";
   updateAddressWarning();
+  updateEditorPages();
+  schedulePreview();
+}
+let editorPagesFrame;
+function scheduleEditorPages() {
+  cancelAnimationFrame(editorPagesFrame);
+  editorPagesFrame = requestAnimationFrame(updateEditorPages);
+}
+function updateEditorPages() {
+  const paper = $("#paper"), flow = paper.querySelector(".editor-flow");
+  if (!flow) return;
+  const sheetWidth = parseFloat(getComputedStyle(paper).width), sheetHeight = sheetWidth * 297 / 210;
+  const contentBottom = flow.offsetTop + flow.scrollHeight + parseFloat(getComputedStyle(paper).paddingBottom);
+  const count = Math.max(1, Math.ceil(contentBottom / sheetHeight));
+  paper.style.height = `${count * sheetHeight}px`;
+  paper.parentElement.style.width = `${sheetWidth * 1.15}px`;
+  paper.parentElement.style.height = `${count * sheetHeight * 1.15}px`;
+  paper.querySelectorAll(".editor-page-decoration").forEach(element => element.remove());
+  for (let i = 0; i < count; i++) {
+    const sheet = document.createElement("div");
+    sheet.className = "editor-page-decoration";
+    sheet.style.top = `${i * sheetHeight}px`;
+    sheet.setAttribute("aria-hidden", "true");
+    paper.prepend(sheet);
+  }
 }
 function updateAddressWarning() {
   const old = document.querySelector(".address-warning");
@@ -315,13 +354,16 @@ $("#paper").addEventListener("input", event => {
   else if (group === "portfolio") state.portfolio[key] = value;
   else if (group === "work") state.portfolio.entries[Number(entry)][key] = value;
   message = group === "letter" && key === "date" && value && !parseEditedDate(value) ? "Das Datum bitte gültig im Format TT.MM.JJJJ eingeben." : "";
-  save(); updateAddressWarning();
+  save(); updateAddressWarning(); scheduleEditorPages();
 });
 $("#paper").addEventListener("keydown", event => {
+  if ((event.key === "Enter" || event.key === " ") && event.target.matches("[data-open-profile], [data-open-recipient]")) {
+    event.preventDefault(); event.target.click(); return;
+  }
   if (event.key === "Enter" && event.shiftKey && event.target.matches('[data-group="entry"][data-key="title"]')) {
     event.preventDefault();
     const subtitle = event.target.closest(".resume-entry").querySelector('[data-key="subtitle"]');
-    subtitle.hidden = false; subtitle.focus();
+    subtitle.hidden = false; subtitle.focus(); scheduleEditorPages();
     return;
   }
   if (event.key === "Enter" && event.target.matches('[contenteditable][aria-multiline="false"]')) event.preventDefault();
@@ -338,6 +380,7 @@ $("#paper").addEventListener("focusout", event => {
     document.querySelectorAll('[contenteditable][data-raw*="{"]').forEach(other => { if (other !== element) { const text = resolve(other.dataset.raw); if (other.textContent !== text) other.textContent = text; } });
   }
   if (element.matches('[contenteditable][data-key="subtitle"], [contenteditable][data-group="entry"][data-key="date"], [contenteditable][data-group="entry"][data-key="description"], [contenteditable][data-group="work"][data-key="date"], [contenteditable][data-group="work"][data-key="description"], [contenteditable][data-group="work"][data-key="link"]') && !element.innerText.trim()) element.hidden = true;
+  scheduleEditorPages();
 });
 $("#paper").addEventListener("change", event => {
   const control = event.target;
@@ -359,13 +402,15 @@ $("#paper").addEventListener("paste", event => {
   event.target.dispatchEvent(new Event("input", { bubbles: true }));
 });
 $("#paper").addEventListener("click", event => {
+  if (event.target.closest("[data-open-profile]")) { $("#edit-profile").click(); return; }
+  if (event.target.closest("[data-open-recipient]")) { $("#edit-recipient").click(); return; }
   const button = event.target.closest("[data-action]");
   if (!button) return;
   const index = Number(button.dataset.index), action = button.dataset.action;
   if (action === "show-field") {
     const group = button.dataset.group, entry = button.dataset.entry;
     const element = button.closest(group === "work" ? ".work-entry" : ".resume-entry").querySelector(`[data-group="${group}"][data-key="${button.dataset.field}"][data-entry="${entry}"]`);
-    button.closest("details").open = false; element.hidden = false; element.focus(); return;
+    button.closest("details").open = false; element.hidden = false; element.focus(); scheduleEditorPages(); return;
   }
   if (action === "add-extra") {
     state.extras.push({ label: "", value: "" }); message = ""; save(); render();
@@ -433,8 +478,8 @@ for (const name of ["template", "font", "color"]) $(`#${name}`).addEventListener
 for (const dimension of ["width", "height"]) $(`#photo-${dimension}`).addEventListener("input", event => {
   const key = dimension === "width" ? "photoWidth" : "photoHeight";
   state.design[key] = Number(event.target.value); $(`#photo-${dimension}-value`).textContent = `${event.target.value} mm`;
-  const photo = $(".photo"); if (photo) photo.style[dimension] = `${event.target.value}mm`;
-  save();
+  const photo = $("#paper > .resume-header .photo"); if (photo) photo.style[dimension] = `${event.target.value}mm`;
+  save(); scheduleEditorPages();
 });
 $("#photo-input").addEventListener("change", event => {
   const file = event.target.files[0]; event.target.value = "";
@@ -453,6 +498,32 @@ $("#print").addEventListener("click", () => {
   window.print();
 });
 document.querySelectorAll("[data-close-dialog]").forEach(button => button.addEventListener("click", () => $(`#${button.dataset.closeDialog}`).close()));
+const profileKeys = ["firstName", "lastName", "headline", "email", "phone", "street", "city", "website"];
+$("#edit-profile").addEventListener("click", () => {
+  const form = $("#profile-form");
+  for (const key of profileKeys) form.elements[key].value = state.profile[key];
+  $("#profile-dialog").showModal();
+});
+$("#profile-form").addEventListener("submit", event => {
+  event.preventDefault();
+  for (const key of profileKeys) state.profile[key] = event.currentTarget.elements[key].value.trim();
+  message = ""; save(); render(); $("#profile-dialog").close();
+});
+$("#edit-subject").addEventListener("click", () => {
+  $("#subject-form").reset();
+  $("#subject-form").elements.job.value = state.vars.job;
+  $("#subject-dialog").showModal();
+});
+$("#subject-form").addEventListener("submit", event => {
+  event.preventDefault();
+  const form = event.currentTarget, job = form.elements.job.value.trim();
+  if (!job) { form.elements.job.setCustomValidity("Bitte einen Beruf eingeben."); form.elements.job.reportValidity(); form.elements.job.setCustomValidity(""); return; }
+  if (state.letter.subject && !confirm("Den vorhandenen Betreff durch die Vorlage ersetzen?")) return;
+  const kind = form.elements.kind.value;
+  state.vars.job = job;
+  state.letter.subject = `Bewerbung um ${kind === "Praktikum" ? "das" : "die"} ${kind} als {job_name}${form.elements.start.value ? ` ab ${formattedDate(form.elements.start.value)}` : ""}`;
+  message = ""; save(); render(); $("#subject-dialog").close();
+});
 $("#privacy-settings").addEventListener("click", () => {
   $("#welcome-status").textContent = "";
   const choice = document.querySelector(`#welcome-form input[name="storage"][value="${storageMode}"]`);
@@ -512,8 +583,31 @@ $("#edit-recipient").addEventListener("click", () => {
   if (details && details.snapshot === state.letter.recipient) {
     for (const key of ["company", "department", "contact", "street", "postal", "city", "country", "salutationName"]) form.elements[key].value = details[key];
   }
-  $("#current-recipient").textContent = state.letter.recipient || "(noch leer)";
+  form.elements.address.value = state.letter.recipient;
+  form.elements.customSalutation.value = state.letter.salutation;
+  form.dataset.addressEdited = "false";
+  form.dataset.detailsEdited = "false";
   $("#recipient-dialog").showModal();
+});
+$("#recipient-form").addEventListener("input", event => {
+  const form = event.currentTarget, name = event.target.name;
+  if (name === "address") form.dataset.addressEdited = "true";
+  if (["company", "department", "contact", "street", "postal", "city", "country"].includes(name)) form.dataset.detailsEdited = "true";
+});
+$("#recipient-compose").addEventListener("click", () => {
+  const e = $("#recipient-form").elements;
+  const address = [e.company.value, e.department.value, e.contact.value, e.street.value, [e.postal.value, e.city.value].filter(Boolean).join(" "), e.country.value].filter(Boolean).join("\n");
+  if (e.address.value.trim() && e.address.value.trim() !== address && !confirm("Die vorhandene Adresse durch die Einzelfelder ersetzen?")) return;
+  e.address.value = address;
+  $("#recipient-form").dataset.addressEdited = "true";
+  $("#recipient-form").dataset.detailsEdited = "false";
+});
+$("#recipient-form").addEventListener("change", event => {
+  const e = event.currentTarget.elements;
+  if (event.target.name !== "salutation") return;
+  if (e.salutation.value === "general") e.customSalutation.value = "Sehr geehrte Damen und Herren,";
+  else if (e.salutation.value === "frau") e.customSalutation.value = `Sehr geehrte Frau ${e.salutationName.value.trim()},`;
+  else if (e.salutation.value === "herr") e.customSalutation.value = `Sehr geehrter Herr ${e.salutationName.value.trim()},`;
 });
 $("#recipient-form").addEventListener("submit", event => {
   event.preventDefault();
@@ -527,14 +621,14 @@ $("#recipient-form").addEventListener("submit", event => {
     form.elements.salutationName.setCustomValidity("");
     return;
   }
-  const lines = [details.company, details.department, details.contact, details.street, [details.postal, details.city].filter(Boolean).join(" "), details.country].filter(Boolean);
-  if (!lines.length) { $("#recipient-status").textContent = "Bitte mindestens eine Empfängerangabe eintragen."; return; }
-  if (state.letter.recipient && state.letter.recipient !== lines.join("\n") && !confirm("Das bestehende Empfängerfeld durch diese Angaben ersetzen?")) return;
-  state.letter.recipient = lines.join("\n");
-  state.recipientDetails = { ...details, snapshot: state.letter.recipient };
+  const structured = [details.company, details.department, details.contact, details.street, [details.postal, details.city].filter(Boolean).join(" "), details.country].filter(Boolean).join("\n");
+  if (form.dataset.detailsEdited === "true" && form.dataset.addressEdited === "true" && form.elements.address.value.trim() !== structured &&
+      !confirm("Die Einzelfelder und die frei bearbeitete Adresse unterscheiden sich. Die Einzelfelder als Adresse übernehmen?")) return;
+  state.letter.recipient = form.dataset.detailsEdited === "true" ? structured : form.elements.address.value.trim();
+  state.recipientDetails = structured === state.letter.recipient ? { ...details, snapshot: state.letter.recipient } : null;
   if (choice === "frau") state.letter.salutation = `Sehr geehrte Frau ${details.salutationName},`;
   else if (choice === "herr") state.letter.salutation = `Sehr geehrter Herr ${details.salutationName},`;
-  else if (choice === "general") state.letter.salutation = "Sehr geehrte Damen und Herren,";
+  else state.letter.salutation = form.elements.customSalutation.value.trim();
   message = ""; save(); render(); $("#recipient-dialog").close();
 });
 function versionSummary(json) {
@@ -579,7 +673,7 @@ $("#placeholder-form").addEventListener("submit", event => {
 $("#export").addEventListener("click", () => {
   const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob), link = document.createElement("a");
-  link.href = url; link.download = "hireme-sicherung.json"; link.click();
+  link.href = url; link.download = "hireme-vorlage.json"; link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
 $("#import").addEventListener("change", async event => {
@@ -587,7 +681,7 @@ $("#import").addEventListener("change", async event => {
   if (!file) return;
   try {
     const imported = parseState(JSON.parse(await file.text()));
-    if (!confirm("Die aktuellen Daten durch die Sicherung ersetzen?")) return;
+    if (!confirm("Die aktuellen Daten durch die Vorlage ersetzen?")) return;
     takeSnapshot("Vor Import"); state = imported; loadBlocked = false; message = ""; save(); render();
   } catch (error) { console.error(error); message = `Import fehlgeschlagen: ${error.message}`; showStatus(); }
   finally { event.target.value = ""; }
@@ -739,7 +833,7 @@ async function photoJpeg(photo, widthMm, heightMm) {
   context.drawImage(image, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h);
   return canvas.toDataURL("image/jpeg", 0.92);
 }
-async function renderPdf(type) {
+async function renderPdfLayout(type, fontScale = 1) {
   const pdf = await PDFLib.PDFDocument.create(), d = state.design, serif = d.font === "Georgia";
   const reg = await pdf.embedFont(serif ? PDFLib.StandardFonts.TimesRoman : PDFLib.StandardFonts.Helvetica);
   const bold = await pdf.embedFont(serif ? PDFLib.StandardFonts.TimesRomanBold : PDFLib.StandardFonts.HelveticaBold);
@@ -771,24 +865,37 @@ async function renderPdf(type) {
   const drawLine = (page, font, size, color, text, x, top, lineH) => {
     if (text) page.drawText(text, { x, y: PAGE_H - top - (lineH - size) / 2 - size * 0.85, size, font, color });
   };
-  const gap = h => ({ h, draw() {} });
+  const gap = h => ({ h, spacer: true, draw() {} });
   const rule = (w, thickness, color) => ({ h: thickness, draw(page, x, top) { page.drawRectangle({ x, y: PAGE_H - top - thickness, width: w, height: thickness, color }); } });
   const stack = parts => {
     const items = parts.flat(Infinity).filter(Boolean);
-    return { h: items.reduce((sum, item) => sum + item.h, 0), draw(page, x, top) { let t = top; for (const item of items) { item.draw(page, x, t); t += item.h; } } };
+    return { items, h: items.reduce((sum, item) => sum + item.h, 0), draw(page, x, top) { let t = top; for (const item of items) { item.draw(page, x, t); t += item.h; } } };
   };
   const textLines = (font, size, color, text, w, { lineH = size * 1.45, align = "left" } = {}) => {
     const value = resolve(text || "");
     if (!value.trim()) return [];
+    size *= fontScale;
+    lineH *= fontScale;
     return wrap(font, size, value, w).map(lineText => ({ h: lineH, draw(page, x, top) {
       drawLine(page, font, size, color, lineText, align === "right" ? x + w - measure(font, size, lineText) : x, top, lineH);
     } }));
   };
   const textBlock = (...args) => { const lines = textLines(...args); return lines.length ? stack(lines) : null; };
   const inline = (items, w, size, color, gapX, lineH) => {
+    size *= fontScale;
+    lineH *= fontScale;
     const rows = [[]]; let used = 0;
     for (const item of items) {
       const text = clean(reg, item.text), width = measure(reg, size, text) + (item.label ? measure(bold, size, clean(bold, item.label)) : 0);
+      if (width > w) {
+        if (used) { rows.push([]); used = 0; }
+        for (const segment of wrap(reg, size, `${item.label || ""}${text}`, w)) {
+          if (used) rows.push([]);
+          rows[rows.length - 1].push({ text: segment, width: measure(reg, size, segment) });
+          used = w;
+        }
+        continue;
+      }
       if (used && used + width > w) { rows.push([]); used = 0; }
       rows[rows.length - 1].push({ ...item, text, width }); used += width + gapX;
     }
@@ -803,21 +910,16 @@ async function renderPdf(type) {
   const customField = (field, w) => {
     const label = field.label.trim() ? `${resolve(field.label)}:` : "", value = resolve(field.value || "");
     if (!label && !value.trim()) return null;
-    const labelW = label ? measure(bold, 10, clean(bold, label)) + 4 : 0, valueW = Math.max(w - labelW, w * 0.4);
-    const lines = wrap(reg, 10, value, valueW), count = Math.max(lines.length, 1);
-    return { h: count * 14.5, draw(page, x, top) {
-      drawLine(page, bold, 10, dark, clean(bold, label), x, top, 14.5);
-      lines.forEach((text, i) => drawLine(page, reg, 10, dark, text, x + labelW, top + i * 14.5, 14.5));
-    } };
+    return stack([textLines(bold, 10, dark, label, w), textLines(reg, 10, dark, value, w)]);
   };
   const titleDateRow = (title, date, w, titleFont, titleSize, titleColor) => {
-    const dateText = resolve(date || ""), dateW = dateText ? Math.min(measure(reg, 9, clean(reg, dateText)), w * 0.4) : 0;
+    const dateText = resolve(date || ""), dateW = dateText ? Math.min(measure(reg, 9 * fontScale, clean(reg, dateText)), w * 0.4) : 0;
     const titleLines = textLines(titleFont, titleSize, titleColor, title, w - (dateW ? dateW + 10 : 0), { lineH: titleSize * 1.45 });
     const dateLines = dateW ? textLines(reg, 9, muted, dateText, w * 0.4, { lineH: 13, align: "right" }) : [];
-    const titleBlock = titleLines.length ? stack(titleLines) : null, dateBlock = dateLines.length ? stack(dateLines) : null;
-    const h = Math.max(titleBlock ? titleBlock.h : 0, dateBlock ? dateBlock.h : 0);
-    if (!h) return null;
-    return { h, draw(page, x, top) { if (titleBlock) titleBlock.draw(page, x, top); if (dateBlock) dateBlock.draw(page, x + w * 0.6, top); } };
+    return stack(Array.from({ length: Math.max(titleLines.length, dateLines.length) }, (_, i) => ({
+      h: Math.max(titleLines[i]?.h || 0, dateLines[i]?.h || 0),
+      draw(page, x, top) { if (titleLines[i]) titleLines[i].draw(page, x, top); if (dateLines[i]) dateLines[i].draw(page, x + w * 0.6, top); }
+    })));
   };
   const ratingBlock = (rating, w) => rating ? { h: 15, draw(page, x, top) {
     for (let i = 0; i < rating.max; i++) {
@@ -843,8 +945,12 @@ async function renderPdf(type) {
     ]);
     return entries.length ? [stack([heading, entries[0]]), ...entries.slice(1), gap(14)] : [];
   };
-  let page = null, top = 0, startTop = 0;
-  const newPage = (first) => { page = pdf.addPage([PAGE_W, PAGE_H]); top = first ?? MARGIN_TOP; startTop = top; };
+  let page = null, top = 0, startTop = 0, repeatHeader = null;
+  const newPage = (first) => {
+    page = pdf.addPage([PAGE_W, PAGE_H]); top = first ?? MARGIN_TOP;
+    if (repeatHeader) { repeatHeader.draw(page, MARGIN_X, top); top += repeatHeader.h; }
+    startTop = top;
+  };
   const place = columns => {
     const queues = columns.map(column => [...column.blocks]);
     let ys = columns.map(() => top);
@@ -852,7 +958,18 @@ async function renderPdf(type) {
       columns.forEach((column, i) => {
         while (queues[i].length) {
           const block = queues[i][0];
-          if (ys[i] + block.h > PAGE_H - MARGIN_BOTTOM && ys[i] > startTop) break;
+          if (block.h > PAGE_H - MARGIN_BOTTOM - startTop) {
+            if (block.items && block.items.length) { queues[i].splice(0, 1, ...block.items); continue; }
+            throw new Error("Ein Inhalt ist zu groß für eine PDF-Seite. Bitte kürze ihn.");
+          }
+          if (ys[i] + block.h > PAGE_H - MARGIN_BOTTOM) {
+            if (block.spacer) { queues[i].shift(); continue; }
+            if (block.items && block.items.length && block.h > (PAGE_H - MARGIN_BOTTOM - startTop) / 2) {
+              queues[i].splice(0, 1, ...block.items); continue;
+            }
+            if (ys[i] > startTop) break;
+            throw new Error("Ein Inhalt ist zu groß für eine PDF-Seite. Bitte kürze ihn.");
+          }
           queues[i].shift(); block.draw(page, column.x, ys[i]); ys[i] += block.h;
         }
       });
@@ -878,11 +995,15 @@ async function renderPdf(type) {
       contact.length ? [gap(9), contact] : null
     ]);
     const headH = Math.max(left.h, photoH), hasRule = d.template !== "minimal", thick = d.template === "classic" ? 0.75 : 1.5;
-    full([{ h: headH + 13.5 + (hasRule ? thick : 0) + 15, draw(pg, x, t) {
+    const header = { h: headH + 13.5 + (hasRule ? thick : 0) + 15, draw(pg, x, t) {
       left.draw(pg, x, t);
       if (photoImageRef) pg.drawImage(photoImageRef, { x: x + CONTENT_W - photoW, y: PAGE_H - t - photoH, width: photoW, height: photoH });
       if (hasRule) pg.drawRectangle({ x, y: PAGE_H - t - headH - 13.5 - thick, width: CONTENT_W, height: thick, color: accent });
-    } }]);
+    } };
+    if (header.h > PAGE_H - MARGIN_TOP - MARGIN_BOTTOM - 30) throw new Error("Der Lebenslaufkopf ist zu groß. Bitte kürze die persönlichen Angaben.");
+    full([header]);
+    repeatHeader = header;
+    startTop = top;
     const sections = state.sections.filter(section => section.entries.some(entryHasContent));
     for (let i = 0; i < sections.length;) {
       const half = CONTENT_W / 2;
@@ -896,13 +1017,17 @@ async function renderPdf(type) {
     const l = state.letter, sender = [name, p.street, p.city].filter(Boolean).join(" · ");
     const info = [name, p.street, p.city, p.email, p.phone].filter(Boolean).flatMap(text => textLines(reg, 9, rgbHex("#555555"), text, 65 * MM, { lineH: 13.5 }));
     const recipient = textLines(reg, 10, dark, l.recipient, 85 * MM, { lineH: 13 });
-    textLines(reg, 7, dark, sender, 85 * MM, { lineH: 8.4 }).slice(0, 1).forEach(item => item.draw(page, MARGIN_X, 46 * MM));
-    recipient.slice(0, 9).forEach((item, i) => item.draw(page, MARGIN_X, 54 * MM + i * 13));
-    info.forEach((item, i) => item.draw(page, PAGE_W - MARGIN_X - 65 * MM, 45 * MM + i * 13.5));
+    const senderLines = textLines(reg, 7, dark, sender, 85 * MM, { lineH: 8.4 });
+    if (senderLines.length > 1 || recipient.length * 13 * fontScale > 36 * MM || info.length * 13.5 * fontScale > 55 * MM) throw new Error("Die Adresse oder die Kontaktdaten sind für den Briefkopf zu lang. Bitte kürzen.");
+    senderLines.forEach(item => item.draw(page, MARGIN_X, 46 * MM));
+    recipient.forEach((item, i) => item.draw(page, MARGIN_X, 54 * MM + i * 13 * fontScale));
+    info.forEach((item, i) => item.draw(page, PAGE_W - MARGIN_X - 65 * MM, 45 * MM + i * 13.5 * fontScale));
     const dateLine = [resolve(l.place), formattedDate(l.date)].filter(Boolean).join(", ");
+    const subjectColor = d.template === "minimal" ? dark : accent;
     full([
       textBlock(reg, 10, dark, dateLine, CONTENT_W, { align: "right" }), gap(10 * MM),
-      textBlock(bold, 10, dark, l.subject, CONTENT_W), gap(8 * MM),
+      textBlock(bold, d.template === "classic" ? 11 : 10, subjectColor, l.subject, CONTENT_W),
+      d.template === "modern" && l.subject.trim() ? [gap(4), rule(CONTENT_W, 0.75, accent)] : null, gap(8 * MM),
       textBlock(reg, 10, dark, l.salutation, CONTENT_W), gap(5 * MM),
       textLines(reg, 10, dark, l.body, CONTENT_W, { lineH: 16 }), gap(8 * MM),
       textBlock(reg, 10, dark, l.closing, CONTENT_W), gap(12 * MM),
@@ -920,12 +1045,79 @@ async function renderPdf(type) {
       ])]);
     }
   }
-  return pdf.save();
+  const pages = pdf.getPages();
+  if (pages.length > 1) pages.forEach((current, index) => {
+    const label = `Seite ${index + 1} von ${pages.length}`;
+    current.drawText(label, { x: PAGE_W - MARGIN_X - measure(reg, 9, label), y: 10 * MM, size: 9, font: reg, color: muted });
+  });
+  return { bytes: await pdf.save(), pageCount: pages.length, lastUsed: top - startTop, lastCapacity: PAGE_H - MARGIN_BOTTOM - startTop };
+}
+async function renderPdf(type) {
+  const normal = await renderPdfLayout(type);
+  const occupancy = normal.lastUsed / normal.lastCapacity;
+  if (normal.pageCount > 1 && occupancy > 0 && occupancy < 0.08) {
+    const smaller = await renderPdfLayout(type, 0.95);
+    if (smaller.pageCount < normal.pageCount) return smaller.bytes;
+  }
+  if (occupancy >= 0.85 && occupancy <= 0.95) {
+    const larger = await renderPdfLayout(type, 1.05);
+    if (larger.pageCount === normal.pageCount) return larger.bytes;
+  }
+  return normal.bytes;
 }
 function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob), link = document.createElement("a");
   link.href = url; link.download = filename; link.click();
   setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+let previewTimer, previewRevision = 0, previewRunning = false;
+function schedulePreview() {
+  previewRevision++;
+  clearTimeout(previewTimer);
+  $("#preview-status").textContent = "Seitenvorschau wird aktualisiert …";
+  previewTimer = setTimeout(updatePreview, 700);
+}
+async function updatePreview() {
+  if (previewRunning) return;
+  previewRunning = true;
+  const revision = previewRevision, type = activeDocument;
+  let documentPdf;
+  try {
+    await loadExportLibrary();
+    const bytes = await renderPdf(type);
+    const pdfjs = await loadPdfLibrary();
+    documentPdf = await pdfjs.getDocument({
+      data: new Uint8Array(bytes),
+      cMapUrl: new URL("vendor/pdfjs/cmaps/", document.baseURI).href,
+      cMapPacked: true,
+      standardFontDataUrl: new URL("vendor/pdfjs/standard_fonts/", document.baseURI).href
+    }).promise;
+    const pages = document.createDocumentFragment();
+    for (let number = 1; number <= documentPdf.numPages; number++) {
+      if (revision !== previewRevision) return;
+      const pdfPage = await documentPdf.getPage(number), viewport = pdfPage.getViewport({ scale: 0.9 });
+      const figure = document.createElement("figure"), caption = document.createElement("figcaption"), canvas = document.createElement("canvas");
+      canvas.width = Math.ceil(viewport.width); canvas.height = Math.ceil(viewport.height);
+      canvas.setAttribute("aria-label", `PDF-Vorschau Seite ${number} von ${documentPdf.numPages}`);
+      caption.textContent = `Seite ${number} von ${documentPdf.numPages}`;
+      await pdfPage.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
+      figure.append(canvas, caption); pages.append(figure);
+    }
+    if (revision === previewRevision) {
+      $("#preview-pages").replaceChildren(pages);
+      $("#preview-status").textContent = `${documentPdf.numPages} ${documentPdf.numPages === 1 ? "Seite" : "Seiten"}`;
+    }
+  } catch (error) {
+    console.error(error);
+    if (revision === previewRevision) {
+      $("#preview-pages").replaceChildren();
+      $("#preview-status").textContent = `Seitenvorschau fehlgeschlagen: ${error.message}`;
+    }
+  } finally {
+    if (documentPdf) await documentPdf.destroy();
+    previewRunning = false;
+    if (revision !== previewRevision) { clearTimeout(previewTimer); previewTimer = setTimeout(updatePreview, 700); }
+  }
 }
 $("#pdf-download").addEventListener("click", () => {
   const form = $("#download-form");
@@ -953,22 +1145,12 @@ $("#download-form").addEventListener("submit", async event => {
       const bytes = await renderPdf(type);
       files.push({ type, bytes });
     }
-    if (form.elements.mode.value === "combined") {
-      const combined = await PDFLib.PDFDocument.create();
-      for (const file of files) {
-        const source = await PDFLib.PDFDocument.load(file.bytes);
-        const pages = await combined.copyPages(source, source.getPageIndices());
-        pages.forEach(page => combined.addPage(page));
-      }
-      downloadBlob(new Blob([await combined.save()], { type: "application/pdf" }), `bewerbung_${name}.pdf`);
-    } else {
-      const zip = new JSZip();
-      for (const file of files) {
-        const label = { letter: "Anschreiben", resume: "Lebenslauf", portfolio: "Arbeitsproben" }[file.type];
-        zip.file(`${label}_${name}.pdf`, file.bytes);
-      }
-      downloadBlob(await zip.generateAsync({ type: "blob" }), `bewerbung_${name}.zip`);
+    const zip = new JSZip();
+    for (const file of files) {
+      const label = { letter: "Anschreiben", resume: "Lebenslauf", portfolio: "Arbeitsproben" }[file.type];
+      zip.file(`${label}_${name}.pdf`, file.bytes);
     }
+    downloadBlob(await zip.generateAsync({ type: "blob" }), `bewerbung_${name}.zip`);
     $("#download-dialog").close();
   } catch (error) {
     console.error(error);
