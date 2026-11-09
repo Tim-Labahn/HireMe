@@ -6,6 +6,8 @@ const defaultState = () => ({
   profile: { firstName: "", lastName: "", headline: "", email: "", phone: "", street: "", city: "", website: "", photo: "" },
   letter: { recipient: "", place: "", date: "", subject: "", salutation: "Sehr geehrte Damen und Herren,", body: "", closing: "Mit freundlichen Grüßen" },
   recipientDetails: null,
+  vars: { company: "", job: "" },
+  extras: [],
   portfolio: { title: "Arbeitsproben", entries: [] },
   design: { template: "modern", color: "#5a50c8", font: "Arial", photoWidth: 32, photoHeight: 40 },
   sections: [
@@ -19,8 +21,26 @@ const escapeHtml = value => String(value ?? "").replace(/[&<>"']/g, char => ({ "
 const uid = () => `section-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 let state = defaultState(), activeDocument = "resume", draggedId = null, saveError = "", message = "", loadBlocked = false, storageMode = "temporary", hasStarted = false;
 let pdfRows = null, pdfProposal = null;
+const MAX_VERSIONS = 40;
+let versions = [], snapshotTimer = null;
+function takeSnapshot(label = "Bearbeitung") {
+  clearTimeout(snapshotTimer);
+  const json = JSON.stringify(state);
+  if (versions.length && versions[0].json === json) return;
+  versions.unshift({ time: new Date(), label, json });
+  if (versions.length > MAX_VERSIONS) versions.length = MAX_VERSIONS;
+}
+function scheduleSnapshot() { clearTimeout(snapshotTimer); snapshotTimer = setTimeout(() => takeSnapshot(), 1500); }
 
 function isRecord(value) { return value !== null && typeof value === "object" && !Array.isArray(value); }
+function parseFields(list) {
+  if (list === undefined) return [];
+  if (!Array.isArray(list)) throw new Error("Ungültige eigene Felder.");
+  return list.map(field => {
+    if (!isRecord(field) || typeof field.label !== "string" || typeof field.value !== "string") throw new Error("Ungültiges eigenes Feld.");
+    return { label: field.label, value: field.value };
+  });
+}
 function parseState(data) {
   if (!isRecord(data) || !isRecord(data.profile) || !isRecord(data.letter) || !isRecord(data.design) || !Array.isArray(data.sections)) throw new Error("Die Datei enthält keine gültige Sicherung.");
   const defaults = defaultState();
@@ -44,6 +64,8 @@ function parseState(data) {
     return { id: section.id, title: section.title, width: section.width, entries: section.entries.map(entry => {
       if (!isRecord(entry)) throw new Error("Ungültiger Eintrag.");
       const result = strings(entry, { title: "", subtitle: "", date: "", description: "" });
+      const fields = parseFields(entry.fields);
+      if (fields.length) result.fields = fields;
       if (entry.rating !== undefined && entry.rating !== null) {
         if (!isRecord(entry.rating) || ![5, 10].includes(entry.rating.max) || !Number.isInteger(entry.rating.value) || entry.rating.value < 1 || entry.rating.value > entry.rating.max) throw new Error("Ungültige Bewertung.");
         result.rating = { max: entry.rating.max, value: entry.rating.value };
@@ -64,7 +86,12 @@ function parseState(data) {
     if (!isRecord(data.recipientDetails)) throw new Error("Ungültige Empfängerangaben.");
     recipientDetails = strings(data.recipientDetails, { company: "", department: "", contact: "", street: "", postal: "", city: "", country: "", salutationName: "", snapshot: "" });
   }
-  return { profile, letter, design, sections, portfolio, recipientDetails };
+  let vars = defaults.vars;
+  if (data.vars !== undefined) {
+    if (!isRecord(data.vars) || typeof data.vars.company !== "string" || typeof data.vars.job !== "string") throw new Error("Ungültige Platzhalter.");
+    vars = { company: data.vars.company, job: data.vars.job };
+  }
+  return { profile, letter, design, sections, portfolio, recipientDetails, vars, extras: parseFields(data.extras) };
 }
 function showStatus() { $("#status").textContent = [saveError, message].filter(Boolean).join(" "); }
 function updateStorageIndicator() {
@@ -73,6 +100,7 @@ function updateStorageIndicator() {
     : "Speicherung: nur in diesem Tab. Beim Neuladen oder Schließen gehen Änderungen verloren.";
 }
 function save() {
+  scheduleSnapshot();
   if (storageMode !== "local") { showStatus(); return; }
   if (loadBlocked) { showStatus(); return; }
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); saveError = ""; }
@@ -97,22 +125,67 @@ try {
   saveError = "Der Browserspeicher ist nicht verfügbar. Du kannst vorübergehend ohne lokale Speicherung arbeiten.";
 }
 
+const PLAIN_KEYS = new Set(["email", "phone", "website", "date", "link"]);
+function placeholderValues() {
+  const p = state.profile, r = state.recipientDetails || {}, v = state.vars;
+  const company = v.company || r.company || "", job = v.job, contact = r.contact || "";
+  const name = [p.firstName, p.lastName].filter(Boolean).join(" ");
+  const date = formattedDate(state.letter.date) || new Date().toLocaleDateString("de-DE");
+  return {
+    company, firma: company, job_name: job, beruf: job, stelle: job, name, first_name: p.firstName, vorname: p.firstName, last_name: p.lastName, nachname: p.lastName,
+    email: p.email, phone: p.phone, telefon: p.phone, city: p.city, ort: p.city, street: p.street, strasse: p.street, contact, ansprechpartner: contact, date, datum: date
+  };
+}
+function resolve(text) {
+  if (!text || !text.includes("{")) return text;
+  const values = placeholderValues();
+  return text.replace(/\{\s*([a-z_]+)\s*\}/gi, (match, key) => values[key.toLowerCase()] || match);
+}
 function editable(group, key, placeholder, options = {}) {
   const value = options.value === undefined ? state[group][key] : options.value;
   const tag = options.tag || "span", classes = options.className || "";
   const section = options.section === undefined ? "" : ` data-section="${options.section}"`;
   const entry = options.entry === undefined ? "" : ` data-entry="${options.entry}"`;
-  return `<${tag} class="${classes}" contenteditable="true" role="textbox" aria-label="${escapeHtml(placeholder)}" aria-multiline="${Boolean(options.multiline)}" data-group="${group}" data-key="${key}"${section}${entry} data-placeholder="${escapeHtml(placeholder)}"${options.optional && !value ? " hidden" : ""}>${escapeHtml(value)}</${tag}>`;
+  const field = options.field === undefined ? "" : ` data-field="${options.field}"`;
+  const plain = PLAIN_KEYS.has(key);
+  return `<${tag} class="${classes}" contenteditable="true" role="textbox" spellcheck="${!plain}" lang="de" autocorrect="${plain ? "off" : "on"}" autocapitalize="${plain ? "off" : "sentences"}" aria-label="${escapeHtml(placeholder)}" aria-multiline="${Boolean(options.multiline)}" data-group="${group}" data-key="${key}"${section}${entry}${field} data-placeholder="${escapeHtml(placeholder)}" data-raw="${escapeHtml(value)}"${options.optional && !value ? " hidden" : ""}>${escapeHtml(resolve(value))}</${tag}>`;
+}
+const AUTOCORRECT = {
+  nciht: "nicht", nihct: "nicht", udn: "und", dnn: "dann", fuer: "für", ueber: "über", moechte: "möchte", koennen: "können", koennte: "könnte",
+  wuerde: "würde", waere: "wäre", gruesse: "grüße", grüsse: "grüße", daß: "dass", heir: "hier", wier: "wir", ihc: "ich", bewerbunng: "bewerbung"
+};
+function autocorrect(element, typed) {
+  const selection = window.getSelection();
+  if (!selection.rangeCount || !selection.isCollapsed) return;
+  const node = selection.anchorNode, offset = selection.anchorOffset;
+  if (!node || node.nodeType !== Node.TEXT_NODE || !element.contains(node) || offset < 1) return;
+  const before = node.data.slice(0, offset - 1);
+  if (typed === " " && /[ \u00A0]$/.test(before)) { node.deleteData(offset - 1, 1); return; }
+  const match = before.match(/([A-Za-zÄÖÜäöüß]+)$/);
+  if (!match) return;
+  const word = match[1], start = before.length - word.length, prefix = before.slice(0, start);
+  let fixed = AUTOCORRECT[word.toLowerCase()] || word;
+  if (fixed !== word && word[0] !== word[0].toLowerCase()) fixed = fixed[0].toUpperCase() + fixed.slice(1);
+  const sentenceStart = start === 0 || (/[.!?][ \u00A0]+$/.test(prefix) && !/(?:^|\s)\p{L}{1,2}[.!?][ \u00A0]+$/u.test(prefix));
+  if (element.getAttribute("aria-multiline") === "true" && sentenceStart && /^[a-zäöüß]/.test(fixed)) fixed = fixed[0].toUpperCase() + fixed.slice(1);
+  if (fixed !== word) node.replaceData(start, word.length, fixed);
 }
 function person(key, placeholder, options) { return editable("profile", key, placeholder, options); }
 function letterField(key, placeholder, options) { return editable("letter", key, placeholder, options); }
-function entryHasContent(entry) { return [entry.title, entry.subtitle, entry.date, entry.description].some(value => value.trim()); }
+function fieldHasContent(field) { return Boolean(field.label.trim() || field.value.trim()); }
+function entryHasContent(entry) { return [entry.title, entry.subtitle, entry.date, entry.description].some(value => value.trim()) || (entry.fields || []).some(fieldHasContent); }
+function customField(group, field, index, remove, options = {}) {
+  return `<div class="custom-field">${editable(group, "label", "Bezeichnung", { value: field.label, field: index, className: "custom-label", ...options })}<span class="custom-colon">:</span>
+    ${editable(group, "value", "Wert", { value: field.value, field: index, className: "custom-value", ...options })}
+    <span class="entry-actions"><button class="icon-button" ${remove} aria-label="Feld löschen" title="Feld löschen">✕</button></span></div>`;
+}
 function fieldMenu(index, entryIndex, group) {
   const work = group === "work";
   return `<details class="field-menu"><summary class="icon-button" aria-label="Felder hinzufügen" title="Felder hinzufügen">+</summary><div class="field-options">
     ${work ? "" : `<button type="button" data-action="show-field" data-field="subtitle" data-group="${group}" data-index="${index}" data-entry="${entryIndex}">Untertitel</button>`}
     <button type="button" data-action="show-field" data-field="date" data-group="${group}" data-index="${index}" data-entry="${entryIndex}">Zeitraum</button>
     <button type="button" data-action="show-field" data-field="description" data-group="${group}" data-index="${index}" data-entry="${entryIndex}">Beschreibung</button>
+    ${work ? "" : `<button type="button" data-action="add-entry-field" data-index="${index}" data-entry="${entryIndex}">Eigenes Feld</button>`}
     ${work ? `<button type="button" data-action="show-field" data-field="link" data-group="${group}" data-index="${index}" data-entry="${entryIndex}">Link</button>` : `<button type="button" data-action="toggle-rating" data-index="${index}" data-entry="${entryIndex}">Bewertung ein- / ausblenden</button>`}
   </div></details>`;
 }
@@ -129,6 +202,7 @@ function renderResume() {
     <div class="resume-name">${person("firstName", "Vorname")} ${person("lastName", "Nachname")}</div>
     ${person("headline", "Berufsbezeichnung / Profil", { tag: "div", className: "headline block" })}
     <div class="contact">${person("street", "Straße und Hausnummer")}${person("city", "PLZ und Ort")}${person("email", "E-Mail")}${person("phone", "Telefon")}${person("website", "Website / LinkedIn")}</div>
+    <div class="extra-fields">${state.extras.map((field, i) => customField("extra", field, i, `data-action="remove-extra" data-field="${i}"`)).join("")}<button class="add-entry" data-action="add-extra">+ Feld</button></div>
     </div>${p.photo ? `<img class="photo" src="${p.photo}" alt="Bewerbungsfoto" style="width:${d.photoWidth}mm;height:${d.photoHeight}mm">` : ""}</header>
     <div class="resume-sections">${state.sections.map((section, index) => {
       const empty = !section.entries.some(entryHasContent);
@@ -145,6 +219,7 @@ function renderResume() {
           <div class="entry-actions">${fieldMenu(index, entryIndex, "entry")}<button class="icon-button" data-action="remove-entry" data-index="${index}" data-entry="${entryIndex}" aria-label="Eintrag löschen">✕</button></div></div>
           ${editable("entry", "subtitle", "Untertitel", { value: entry.subtitle, section: index, entry: entryIndex, tag: "div", className: "entry-subtitle block", optional: true })}
           ${editable("entry", "description", "Beschreibung", { value: entry.description, section: index, entry: entryIndex, tag: "div", className: "entry-description block", multiline: true, optional: true })}
+          ${(entry.fields || []).map((field, f) => customField("entryExtra", field, f, `data-action="remove-entry-field" data-index="${index}" data-entry="${entryIndex}" data-field="${f}"`, { section: index, entry: entryIndex })).join("")}
           ${ratingEditor(entry.rating, index, entryIndex)}
         </div>`).join("")}<button class="add-entry" data-action="add-entry" data-index="${index}">+ Eintrag</button></section>`;
     }).join("")}</div>`;
@@ -221,18 +296,22 @@ function parseEditedDate(value) {
 $("#paper").addEventListener("input", event => {
   const element = event.target.closest("[contenteditable]");
   if (!element) return;
-  const { group, key, section, entry } = element.dataset;
-  const value = element.innerText.replace(/\r/g, "").replace(/\n+$/, "");
+  const { group, key, section, entry, field } = element.dataset;
+  if (event.inputType === "insertText" && event.data && /^[ .,!?;:]$/.test(event.data) && !PLAIN_KEYS.has(key)) autocorrect(element, event.data);
+  const value = element.innerText.replace(/\r/g, "").replace(/\u00A0/g, " ").replace(/\n+$/, "");
   if (!value) element.textContent = "";
+  element.dataset.raw = value;
   if (group === "profile") {
     state.profile[key] = value;
-    document.querySelectorAll(`[data-group="profile"][data-key="${key}"]`).forEach(other => { if (other !== element) other.textContent = value; });
+    document.querySelectorAll(`[data-group="profile"][data-key="${key}"]`).forEach(other => { if (other !== element) { other.textContent = resolve(value); other.dataset.raw = value; } });
   } else if (group === "letter") {
     if (key === "date") {
       state.letter.date = parseEditedDate(value) || value;
     } else state.letter[key] = value;
   } else if (group === "section") state.sections[Number(section)][key] = value;
   else if (group === "entry") { state.sections[Number(section)].entries[Number(entry)][key] = value; updateEmptySection(Number(section)); }
+  else if (group === "extra") state.extras[Number(field)][key] = value;
+  else if (group === "entryExtra") { state.sections[Number(section)].entries[Number(entry)].fields[Number(field)][key] = value; updateEmptySection(Number(section)); }
   else if (group === "portfolio") state.portfolio[key] = value;
   else if (group === "work") state.portfolio.entries[Number(entry)][key] = value;
   message = group === "letter" && key === "date" && value && !parseEditedDate(value) ? "Das Datum bitte gültig im Format TT.MM.JJJJ eingeben." : "";
@@ -247,8 +326,17 @@ $("#paper").addEventListener("keydown", event => {
   }
   if (event.key === "Enter" && event.target.matches('[contenteditable][aria-multiline="false"]')) event.preventDefault();
 });
+$("#paper").addEventListener("focusin", event => {
+  const element = event.target;
+  if (element.isContentEditable && element.dataset.raw !== undefined && element.textContent !== element.dataset.raw) element.textContent = element.dataset.raw;
+});
 $("#paper").addEventListener("focusout", event => {
   const element = event.target;
+  if (element.isContentEditable && element.dataset.raw !== undefined) {
+    const shown = resolve(element.dataset.raw);
+    if (element.textContent !== shown) element.textContent = shown;
+    document.querySelectorAll('[contenteditable][data-raw*="{"]').forEach(other => { if (other !== element) { const text = resolve(other.dataset.raw); if (other.textContent !== text) other.textContent = text; } });
+  }
   if (element.matches('[contenteditable][data-key="subtitle"], [contenteditable][data-group="entry"][data-key="date"], [contenteditable][data-group="entry"][data-key="description"], [contenteditable][data-group="work"][data-key="date"], [contenteditable][data-group="work"][data-key="description"], [contenteditable][data-group="work"][data-key="link"]') && !element.innerText.trim()) element.hidden = true;
 });
 $("#paper").addEventListener("change", event => {
@@ -279,10 +367,31 @@ $("#paper").addEventListener("click", event => {
     const element = button.closest(group === "work" ? ".work-entry" : ".resume-entry").querySelector(`[data-group="${group}"][data-key="${button.dataset.field}"][data-entry="${entry}"]`);
     button.closest("details").open = false; element.hidden = false; element.focus(); return;
   }
-  if (action === "remove-section") {
-    if (!confirm("Diesen Abschnitt und alle seine Einträge löschen?")) return;
+  if (action === "add-extra") {
+    state.extras.push({ label: "", value: "" }); message = ""; save(); render();
+    const fields = document.querySelectorAll('[data-group="extra"][data-key="label"]'); fields[fields.length - 1].focus(); return;
+  }
+  if (action === "add-entry-field") {
+    const entry = state.sections[index].entries[Number(button.dataset.entry)];
+    (entry.fields ||= []).push({ label: "", value: "" }); message = ""; save(); render();
+    const fields = document.querySelectorAll(`[data-group="entryExtra"][data-key="label"][data-section="${index}"][data-entry="${button.dataset.entry}"]`); fields[fields.length - 1].focus(); return;
+  }
+  if (action === "remove-extra") {
+    const field = state.extras[Number(button.dataset.field)];
+    if (fieldHasContent(field) && !confirm("Dieses Feld mit Inhalt löschen?")) return;
+    state.extras.splice(Number(button.dataset.field), 1);
+  } else if (action === "remove-entry-field") {
+    const entry = state.sections[index].entries[Number(button.dataset.entry)], position = Number(button.dataset.field);
+    if (fieldHasContent(entry.fields[position]) && !confirm("Dieses Feld mit Inhalt löschen?")) return;
+    entry.fields.splice(position, 1);
+    if (!entry.fields.length) delete entry.fields;
+  } else if (action === "remove-section") {
+    if (state.sections[index].entries.some(entryHasContent) || state.sections[index].title.trim()) { if (!confirm("Diesen Abschnitt und alle seine Einträge löschen?")) return; }
     state.sections.splice(index, 1);
-  } else if (action === "remove-entry") state.sections[index].entries.splice(Number(button.dataset.entry), 1);
+  } else if (action === "remove-entry") {
+    if (entryHasContent(state.sections[index].entries[Number(button.dataset.entry)]) && !confirm("Diesen Eintrag mit Inhalt löschen?")) return;
+    state.sections[index].entries.splice(Number(button.dataset.entry), 1);
+  }
   else if (action === "toggle-rating") {
     const entry = state.sections[index].entries[Number(button.dataset.entry)];
     if (entry.rating) delete entry.rating; else entry.rating = { max: 5, value: 3 };
@@ -386,7 +495,7 @@ $("#delete-local").addEventListener("click", () => {
   if (!confirm("Lokal gespeicherte Bewerbungsdaten und Speichereinstellung dieses Browsers löschen? Der aktuelle Stand im Tab wird ebenfalls zurückgesetzt. Exportierte Dateien werden nicht gelöscht.")) return;
   try {
     localStorage.removeItem(STORAGE_KEY); localStorage.removeItem(STORAGE_CHOICE_KEY);
-    state = defaultState(); storageMode = "temporary"; loadBlocked = false; saveError = ""; message = "";
+    state = defaultState(); versions = []; takeSnapshot("Startstand"); storageMode = "temporary"; loadBlocked = false; saveError = ""; message = "";
     updateStorageIndicator(); render(); showStatus();
     $("#welcome-status").textContent = "Die lokalen Daten wurden gelöscht. Bitte wähle, wie du fortfahren möchtest.";
     document.querySelectorAll('#welcome-form input[name="storage"]').forEach(input => { input.checked = false; });
@@ -428,6 +537,45 @@ $("#recipient-form").addEventListener("submit", event => {
   else if (choice === "general") state.letter.salutation = "Sehr geehrte Damen und Herren,";
   message = ""; save(); render(); $("#recipient-dialog").close();
 });
+function versionSummary(json) {
+  const s = JSON.parse(json), parts = [[s.profile.firstName, s.profile.lastName].filter(Boolean).join(" "), s.profile.headline, s.letter.subject, (s.letter.body || "").slice(0, 40)].filter(Boolean);
+  return parts.join(" · ") || "(leer)";
+}
+function renderVersions() {
+  const list = $("#version-list"), current = JSON.stringify(state);
+  list.textContent = "";
+  $("#version-empty").hidden = versions.length > 0;
+  versions.forEach((version, index) => {
+    const item = document.createElement("li"), info = document.createElement("div"), button = document.createElement("button");
+    info.innerHTML = `<strong>${escapeHtml(version.time.toLocaleTimeString("de-DE"))}</strong> – ${escapeHtml(version.label)}${version.json === current ? " (aktuell)" : ""}<br><span>${escapeHtml(versionSummary(version.json))}</span>`;
+    button.type = "button"; button.className = "button secondary"; button.dataset.version = index; button.textContent = "Wiederherstellen"; button.disabled = version.json === current;
+    item.append(info, button); list.append(item);
+  });
+}
+$("#versions").addEventListener("click", () => { takeSnapshot(); renderVersions(); $("#versions-dialog").showModal(); });
+$("#save-version").addEventListener("click", () => { takeSnapshot("Manuell gespeichert"); renderVersions(); });
+$("#version-list").addEventListener("click", event => {
+  const button = event.target.closest("[data-version]");
+  if (!button) return;
+  try {
+    const restored = parseState(JSON.parse(versions[Number(button.dataset.version)].json));
+    takeSnapshot("Vor Wiederherstellung");
+    state = restored; message = ""; save(); render(); $("#versions-dialog").close();
+  } catch (error) { console.error(error); message = `Wiederherstellung fehlgeschlagen: ${error.message}`; showStatus(); }
+});
+function openPlaceholders() {
+  const form = $("#placeholder-form");
+  form.elements.company.value = state.vars.company; form.elements.job.value = state.vars.job;
+  form.elements.company.placeholder = (state.recipientDetails && state.recipientDetails.company) || "z. B. Beispiel GmbH";
+  $("#placeholder-dialog").showModal();
+}
+$("#placeholders").addEventListener("click", openPlaceholders);
+$("#placeholder-form").addEventListener("submit", event => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  state.vars = { company: form.elements.company.value.trim(), job: form.elements.job.value.trim() };
+  message = ""; save(); render(); $("#placeholder-dialog").close();
+});
 $("#export").addEventListener("click", () => {
   const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob), link = document.createElement("a");
@@ -440,7 +588,7 @@ $("#import").addEventListener("change", async event => {
   try {
     const imported = parseState(JSON.parse(await file.text()));
     if (!confirm("Die aktuellen Daten durch die Sicherung ersetzen?")) return;
-    state = imported; loadBlocked = false; message = ""; save(); render();
+    takeSnapshot("Vor Import"); state = imported; loadBlocked = false; message = ""; save(); render();
   } catch (error) { console.error(error); message = `Import fehlgeschlagen: ${error.message}`; showStatus(); }
   finally { event.target.value = ""; }
 });
@@ -549,6 +697,7 @@ $("#apply-import").addEventListener("click", () => {
   if (!pdfProposal) return;
   if (!confirm("Erkannte Daten übernehmen? Die im Hinweis genannten bestehenden Daten werden ersetzt.")) return;
   if (loadBlocked && !confirm("Die bisherigen Browserdaten konnten nicht geladen werden und werden durch diese Daten ersetzt. Fortfahren?")) return;
+  takeSnapshot("Vor PDF-Import");
   for (const [key, value] of Object.entries(pdfProposal.profile)) if (value && key in state.profile) state.profile[key] = value;
   if ($("#pdf-type").value === "resume") {
     if (pdfProposal.sections.length) state.sections = pdfProposal.sections.map(section => ({ ...section, id: uid() }));
@@ -563,10 +712,9 @@ let exportInProgress = false;
 async function loadExportLibrary() {
   if (!exportLibrary) {
     exportLibrary = (async () => {
-      await loadClassicScript("vendor/export/html2pdf.bundle.min.js");
       await loadClassicScript("vendor/export/pdf-lib.min.js");
       await loadClassicScript("vendor/export/jszip.min.js");
-      if (!globalThis.html2pdf || !globalThis.PDFLib || !globalThis.JSZip) throw new Error("Exportbibliotheken sind nicht verfügbar.");
+      if (!globalThis.PDFLib || !globalThis.JSZip) throw new Error("Exportbibliotheken sind nicht verfügbar.");
     })().catch(error => { exportLibrary = null; throw error; });
   }
   return exportLibrary;
@@ -575,41 +723,209 @@ function safeFilename(value) {
   const cleaned = value.normalize("NFC").trim().replace(/[\\/:*?"<>|\x00-\x1f]+/g, "_").replace(/\s+/g, "_").replace(/[. ]+$/g, "").slice(0, 100);
   return cleaned && !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(cleaned) ? cleaned : "Name";
 }
-function makeExportPaper(type) {
-  const paper = document.createElement("article");
-  paper.className = `paper export-paper template-${state.design.template}${type === "letter" ? " letter-paper" : ""}`;
-  paper.style.setProperty("--accent", state.design.color);
-  paper.style.setProperty("--doc-font", `"${state.design.font}", ${state.design.font === "Georgia" ? "serif" : "sans-serif"}`);
-  paper.innerHTML = type === "resume" ? renderResume() : type === "letter" ? renderLetter() : renderPortfolio();
-  paper.querySelectorAll("[contenteditable]").forEach(element => element.setAttribute("contenteditable", "false"));
-  paper.querySelectorAll(".section-actions, .entry-actions, .add-entry, .rating-controls, .empty-section, [hidden]").forEach(element => element.remove());
-  paper.querySelectorAll(".block").forEach(element => { if (!element.textContent.trim()) element.remove(); });
-  return paper;
+const MM = 72 / 25.4, PAGE_W = 595.28, PAGE_H = 841.89, MARGIN_X = 20 * MM, MARGIN_TOP = 19 * MM, MARGIN_BOTTOM = 20 * MM, CONTENT_W = PAGE_W - 2 * MARGIN_X;
+function pdfColor(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return PDFLib.rgb(((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255);
+}
+async function photoJpeg(photo, widthMm, heightMm) {
+  const image = new Image();
+  await new Promise((resolve, reject) => { image.onload = resolve; image.onerror = () => reject(new Error("Foto konnte nicht verarbeitet werden.")); image.src = photo; });
+  const canvas = document.createElement("canvas"), scale = 12;
+  canvas.width = Math.round(widthMm * scale); canvas.height = Math.round(heightMm * scale);
+  const context = canvas.getContext("2d"), cover = Math.max(canvas.width / image.naturalWidth, canvas.height / image.naturalHeight);
+  const w = image.naturalWidth * cover, h = image.naturalHeight * cover;
+  context.fillStyle = "#fff"; context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(image, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h);
+  return canvas.toDataURL("image/jpeg", 0.92);
 }
 async function renderPdf(type) {
-  const paper = makeExportPaper(type);
-  const worker = globalThis.html2pdf().set({
-    margin: 0,
-    image: { type: "jpeg", quality: 0.96 },
-    html2canvas: { scale: 2, backgroundColor: "#ffffff", useCORS: false },
-    jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
-    pagebreak: { mode: ["css", "legacy"], avoid: [".resume-entry", ".work-entry"] }
-  }).from(paper).toPdf();
-  return worker.outputPdf("arraybuffer");
+  const pdf = await PDFLib.PDFDocument.create(), d = state.design, serif = d.font === "Georgia";
+  const reg = await pdf.embedFont(serif ? PDFLib.StandardFonts.TimesRoman : PDFLib.StandardFonts.Helvetica);
+  const bold = await pdf.embedFont(serif ? PDFLib.StandardFonts.TimesRomanBold : PDFLib.StandardFonts.HelveticaBold);
+  const accent = pdfColor(d.color), rgbHex = hex => pdfColor(hex);
+  const dark = rgbHex("#30313c"), muted = rgbHex("#777777"), subtle = rgbHex("#686976"), line = rgbHex("#e5e5e9");
+  const sets = new Map([[reg, new Set(reg.getCharacterSet())], [bold, new Set(bold.getCharacterSet())]]);
+  const clean = (font, text) => Array.from(String(text).normalize("NFC").replace(/\t/g, "  ").replace(/[\u00A0\u2007\u202F]/g, " ").replace(/[\u2010-\u2015]/g, "-")).map(ch => (ch === "\n" || sets.get(font).has(ch.codePointAt(0)) ? ch : "?")).join("");
+  const measure = (font, size, text) => font.widthOfTextAtSize(text, size);
+  const wrap = (font, size, text, width) => {
+    const out = [];
+    for (const raw of clean(font, text).split("\n")) {
+      if (!raw.trim()) { out.push(""); continue; }
+      let current = "";
+      for (const word of raw.split(/ +/)) {
+        const candidate = current ? `${current} ${word}` : word;
+        if (measure(font, size, candidate) <= width) { current = candidate; continue; }
+        if (current) out.push(current);
+        current = word;
+        while (measure(font, size, current) > width && current.length > 1) {
+          let cut = current.length - 1;
+          while (cut > 1 && measure(font, size, current.slice(0, cut)) > width) cut--;
+          out.push(current.slice(0, cut)); current = current.slice(cut);
+        }
+      }
+      out.push(current);
+    }
+    return out;
+  };
+  const drawLine = (page, font, size, color, text, x, top, lineH) => {
+    if (text) page.drawText(text, { x, y: PAGE_H - top - (lineH - size) / 2 - size * 0.85, size, font, color });
+  };
+  const gap = h => ({ h, draw() {} });
+  const rule = (w, thickness, color) => ({ h: thickness, draw(page, x, top) { page.drawRectangle({ x, y: PAGE_H - top - thickness, width: w, height: thickness, color }); } });
+  const stack = parts => {
+    const items = parts.flat(Infinity).filter(Boolean);
+    return { h: items.reduce((sum, item) => sum + item.h, 0), draw(page, x, top) { let t = top; for (const item of items) { item.draw(page, x, t); t += item.h; } } };
+  };
+  const textLines = (font, size, color, text, w, { lineH = size * 1.45, align = "left" } = {}) => {
+    const value = resolve(text || "");
+    if (!value.trim()) return [];
+    return wrap(font, size, value, w).map(lineText => ({ h: lineH, draw(page, x, top) {
+      drawLine(page, font, size, color, lineText, align === "right" ? x + w - measure(font, size, lineText) : x, top, lineH);
+    } }));
+  };
+  const textBlock = (...args) => { const lines = textLines(...args); return lines.length ? stack(lines) : null; };
+  const inline = (items, w, size, color, gapX, lineH) => {
+    const rows = [[]]; let used = 0;
+    for (const item of items) {
+      const text = clean(reg, item.text), width = measure(reg, size, text) + (item.label ? measure(bold, size, clean(bold, item.label)) : 0);
+      if (used && used + width > w) { rows.push([]); used = 0; }
+      rows[rows.length - 1].push({ ...item, text, width }); used += width + gapX;
+    }
+    return rows.filter(row => row.length).map(row => ({ h: lineH, draw(page, x, top) {
+      let cursor = x;
+      for (const item of row) {
+        if (item.label) { drawLine(page, bold, size, color, clean(bold, item.label), cursor, top, lineH); cursor += measure(bold, size, clean(bold, item.label)); }
+        drawLine(page, reg, size, color, item.text, cursor, top, lineH); cursor += item.width - (item.label ? measure(bold, size, clean(bold, item.label)) : 0) + gapX;
+      }
+    } }));
+  };
+  const customField = (field, w) => {
+    const label = field.label.trim() ? `${resolve(field.label)}:` : "", value = resolve(field.value || "");
+    if (!label && !value.trim()) return null;
+    const labelW = label ? measure(bold, 10, clean(bold, label)) + 4 : 0, valueW = Math.max(w - labelW, w * 0.4);
+    const lines = wrap(reg, 10, value, valueW), count = Math.max(lines.length, 1);
+    return { h: count * 14.5, draw(page, x, top) {
+      drawLine(page, bold, 10, dark, clean(bold, label), x, top, 14.5);
+      lines.forEach((text, i) => drawLine(page, reg, 10, dark, text, x + labelW, top + i * 14.5, 14.5));
+    } };
+  };
+  const titleDateRow = (title, date, w, titleFont, titleSize, titleColor) => {
+    const dateText = resolve(date || ""), dateW = dateText ? Math.min(measure(reg, 9, clean(reg, dateText)), w * 0.4) : 0;
+    const titleLines = textLines(titleFont, titleSize, titleColor, title, w - (dateW ? dateW + 10 : 0), { lineH: titleSize * 1.45 });
+    const dateLines = dateW ? textLines(reg, 9, muted, dateText, w * 0.4, { lineH: 13, align: "right" }) : [];
+    const titleBlock = titleLines.length ? stack(titleLines) : null, dateBlock = dateLines.length ? stack(dateLines) : null;
+    const h = Math.max(titleBlock ? titleBlock.h : 0, dateBlock ? dateBlock.h : 0);
+    if (!h) return null;
+    return { h, draw(page, x, top) { if (titleBlock) titleBlock.draw(page, x, top); if (dateBlock) dateBlock.draw(page, x + w * 0.6, top); } };
+  };
+  const ratingBlock = (rating, w) => rating ? { h: 15, draw(page, x, top) {
+    for (let i = 0; i < rating.max; i++) {
+      const cx = x + 4 + i * 9.5, cy = PAGE_H - top - 7.5;
+      page.drawCircle({ x: cx, y: cy, size: 3.1, borderColor: accent, borderWidth: 0.8, color: i < rating.value ? accent : PDFLib.rgb(1, 1, 1) });
+    }
+    drawLine(page, reg, 9, muted, `${rating.value}/${rating.max}`, x + 4 + rating.max * 9.5 + 4, top, 15);
+  } } : null;
+  const resumeEntry = (entry, w) => stack([
+    titleDateRow(entry.title, entry.date, w, bold, 10, dark),
+    textBlock(reg, 10, subtle, entry.subtitle, w),
+    entry.description && entry.description.trim() ? [gap(3), textBlock(reg, 10, dark, entry.description, w)] : null,
+    (entry.fields || []).map(field => customField(field, w)),
+    ratingBlock(entry.rating, w),
+    gap(8)
+  ]);
+  const sectionBlocks = (section, w) => {
+    const entries = section.entries.filter(entryHasContent).map(entry => resumeEntry(entry, w));
+    const size = d.template === "classic" ? 13 : 11, title = d.template === "modern" ? resolve(section.title).toUpperCase() : resolve(section.title);
+    const heading = stack([
+      textBlock(bold, size, accent, title, w, { lineH: size * 1.45 }), gap(5),
+      d.template === "minimal" ? null : rule(w, 0.75, line), gap(d.template === "minimal" ? 5 : 7.5)
+    ]);
+    return entries.length ? [stack([heading, entries[0]]), ...entries.slice(1), gap(14)] : [];
+  };
+  let page = null, top = 0, startTop = 0;
+  const newPage = (first) => { page = pdf.addPage([PAGE_W, PAGE_H]); top = first ?? MARGIN_TOP; startTop = top; };
+  const place = columns => {
+    const queues = columns.map(column => [...column.blocks]);
+    let ys = columns.map(() => top);
+    for (;;) {
+      columns.forEach((column, i) => {
+        while (queues[i].length) {
+          const block = queues[i][0];
+          if (ys[i] + block.h > PAGE_H - MARGIN_BOTTOM && ys[i] > startTop) break;
+          queues[i].shift(); block.draw(page, column.x, ys[i]); ys[i] += block.h;
+        }
+      });
+      if (queues.every(queue => !queue.length)) break;
+      newPage(); ys = columns.map(() => top);
+    }
+    top = Math.max(...ys);
+  };
+  const full = blocks => place([{ x: MARGIN_X, blocks: blocks.flat(Infinity).filter(Boolean) }]);
+  const name = [state.profile.firstName, state.profile.lastName].filter(Boolean).join(" "), p = state.profile;
+  newPage(type === "letter" ? 100 * MM : MARGIN_TOP);
+
+  if (type === "resume") {
+    let photoImageRef = null;
+    const photoW = p.photo ? d.photoWidth * MM : 0, photoH = p.photo ? d.photoHeight * MM : 0;
+    if (p.photo) photoImageRef = await pdf.embedJpg(await photoJpeg(p.photo, d.photoWidth, d.photoHeight));
+    const leftW = CONTENT_W - (p.photo ? photoW + 20 : 0);
+    const contact = inline([p.street, p.city, p.email, p.phone, p.website].map(resolve).filter(value => value.trim()).map(text => ({ text }))
+      .concat(state.extras.filter(fieldHasContent).map(field => ({ label: field.label.trim() ? `${resolve(field.label)}: ` : "", text: resolve(field.value) }))), leftW, 9, muted, 10.5, 13);
+    const left = stack([
+      textBlock(bold, 26, rgbHex("#252633"), name, leftW, { lineH: 29 }), gap(4),
+      textBlock(bold, 12, accent, p.headline, leftW, { lineH: 17 }),
+      contact.length ? [gap(9), contact] : null
+    ]);
+    const headH = Math.max(left.h, photoH), hasRule = d.template !== "minimal", thick = d.template === "classic" ? 0.75 : 1.5;
+    full([{ h: headH + 13.5 + (hasRule ? thick : 0) + 15, draw(pg, x, t) {
+      left.draw(pg, x, t);
+      if (photoImageRef) pg.drawImage(photoImageRef, { x: x + CONTENT_W - photoW, y: PAGE_H - t - photoH, width: photoW, height: photoH });
+      if (hasRule) pg.drawRectangle({ x, y: PAGE_H - t - headH - 13.5 - thick, width: CONTENT_W, height: thick, color: accent });
+    } }]);
+    const sections = state.sections.filter(section => section.entries.some(entryHasContent));
+    for (let i = 0; i < sections.length;) {
+      const half = CONTENT_W / 2;
+      if (sections[i].width === 100) { full(sectionBlocks(sections[i], CONTENT_W - 10.5)); i++; continue; }
+      const next = sections[i + 1] && sections[i + 1].width === 50 ? sections[i + 1] : null;
+      const columns = [{ x: MARGIN_X, blocks: sectionBlocks(sections[i], half - 10.5) }];
+      if (next) columns.push({ x: MARGIN_X + half, blocks: sectionBlocks(next, half - 10.5) });
+      place(columns); i += next ? 2 : 1;
+    }
+  } else if (type === "letter") {
+    const l = state.letter, sender = [name, p.street, p.city].filter(Boolean).join(" · ");
+    const info = [name, p.street, p.city, p.email, p.phone].filter(Boolean).flatMap(text => textLines(reg, 9, rgbHex("#555555"), text, 65 * MM, { lineH: 13.5 }));
+    const recipient = textLines(reg, 10, dark, l.recipient, 85 * MM, { lineH: 13 });
+    textLines(reg, 7, dark, sender, 85 * MM, { lineH: 8.4 }).slice(0, 1).forEach(item => item.draw(page, MARGIN_X, 46 * MM));
+    recipient.slice(0, 9).forEach((item, i) => item.draw(page, MARGIN_X, 54 * MM + i * 13));
+    info.forEach((item, i) => item.draw(page, PAGE_W - MARGIN_X - 65 * MM, 45 * MM + i * 13.5));
+    const dateLine = [resolve(l.place), formattedDate(l.date)].filter(Boolean).join(", ");
+    full([
+      textBlock(reg, 10, dark, dateLine, CONTENT_W, { align: "right" }), gap(10 * MM),
+      textBlock(bold, 10, dark, l.subject, CONTENT_W), gap(8 * MM),
+      textBlock(reg, 10, dark, l.salutation, CONTENT_W), gap(5 * MM),
+      textLines(reg, 10, dark, l.body, CONTENT_W, { lineH: 16 }), gap(8 * MM),
+      textBlock(reg, 10, dark, l.closing, CONTENT_W), gap(12 * MM),
+      textBlock(reg, 10, dark, name, CONTENT_W)
+    ]);
+  } else {
+    const header = stack([textBlock(bold, 22, accent, state.portfolio.title, CONTENT_W, { lineH: 30 }), textBlock(reg, 10, muted, name, CONTENT_W), gap(10.5), rule(CONTENT_W, 1.5, accent), gap(15)]);
+    full([header]);
+    for (const entry of state.portfolio.entries.filter(item => [item.title, item.date, item.description, item.link].some(value => value.trim()))) {
+      full([stack([
+        titleDateRow(entry.title, entry.date, CONTENT_W, bold, 10, dark),
+        entry.description.trim() ? [gap(3), textBlock(reg, 10, dark, entry.description, CONTENT_W)] : null,
+        textBlock(reg, 9, accent, entry.link, CONTENT_W),
+        gap(15)
+      ])]);
+    }
+  }
+  return pdf.save();
 }
 function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob), link = document.createElement("a");
   link.href = url; link.download = filename; link.click();
   setTimeout(() => URL.revokeObjectURL(url), 10000);
-}
-function exportAddressOverflows() {
-  const paper = makeExportPaper("letter");
-  paper.style.position = "fixed"; paper.style.left = "-10000px"; paper.style.top = "0";
-  document.body.appendChild(paper);
-  try {
-    const address = paper.querySelector(".address-window"), recipient = paper.querySelector(".recipient"), sender = paper.querySelector(".return-address");
-    return (recipient && recipient.scrollHeight > address.clientHeight - sender.clientHeight + 1) || sender.scrollHeight > sender.clientHeight + 1;
-  } finally { paper.remove(); }
 }
 $("#pdf-download").addEventListener("click", () => {
   const form = $("#download-form");
@@ -624,7 +940,6 @@ $("#download-form").addEventListener("submit", async event => {
   if (!selected.length) { $("#download-status").textContent = "Bitte mindestens ein Dokument auswählen."; return; }
   if (selected.includes("letter")) {
     if (state.letter.date && !parseEditedDate(formattedDate(state.letter.date)) && !confirm("Das Datum ist ungültig. Trotzdem exportieren?")) return;
-    if (exportAddressOverflows() && !confirm("Die Adresse passt möglicherweise nicht ins Fenster. Trotzdem exportieren?")) return;
   }
   const name = safeFilename(form.elements.name.value);
   const buttons = form.querySelectorAll("button");
@@ -661,5 +976,5 @@ $("#download-form").addEventListener("submit", async event => {
   } finally { exportInProgress = false; buttons.forEach(button => { button.disabled = false; }); }
 });
 window.addEventListener("resize", updateAddressWarning);
-render(); updateStorageIndicator(); showStatus();
+render(); updateStorageIndicator(); showStatus(); takeSnapshot("Startstand");
 if (!hasStarted) $("#welcome-dialog").showModal();

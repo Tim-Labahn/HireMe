@@ -17,7 +17,7 @@ const server = http.createServer((request, response) => {
   if (!publicFiles.has(relative) && !file.startsWith(vendor)) { response.writeHead(404).end("Nicht gefunden"); return; }
   fs.readFile(file, (error, data) => {
     if (error) { response.writeHead(error.code === "ENOENT" ? 404 : 500).end("Datei konnte nicht geladen werden"); return; }
-    response.writeHead(200, { "Content-Type": types[path.extname(file)] || "application/octet-stream", "X-Content-Type-Options": "nosniff" });
+    response.writeHead(200, { "Content-Type": types[path.extname(file)] || "application/octet-stream", "X-Content-Type-Options": "nosniff", "Cache-Control": "no-cache" });
     response.end(data);
   });
 });
