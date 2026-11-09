@@ -39,6 +39,8 @@
       <label>Farbe <input id="color" type="color" aria-label="Akzentfarbe"></label>
       <span class="tool-divider"></span>
       <button id="add-section" class="button secondary">+ Abschnitt</button>
+      <button id="placeholders" class="button secondary" title="Firma, Beruf und weitere Platzhalter wie {company} und {job_name}">Platzhalter</button>
+      <button id="versions" class="button secondary" title="Zwischenstände nur im Arbeitsspeicher; mit F5 gelöscht">Versionen</button>
       <button id="add-work" class="button secondary" hidden>+ Arbeitsprobe</button>
       <button id="edit-recipient" class="button secondary" hidden>Empfängeradresse ausfüllen</button>
       <label id="photo-label" class="button secondary" for="photo-input" tabindex="0">Foto wählen</label>
@@ -101,10 +103,31 @@
       <div class="dialog-actions"><button type="button" class="button secondary" data-close-dialog="recipient-dialog">Abbrechen</button><button class="button primary">Übernehmen</button></div>
     </form>
   </dialog>
+  <dialog id="placeholder-dialog">
+    <form id="placeholder-form" class="dialog-content">
+      <div class="dialog-heading"><h2>Platzhalter</h2><button type="button" class="icon-button" data-close-dialog="placeholder-dialog" aria-label="Schließen">✕</button></div>
+      <p>Schreibe Platzhalter in beliebige Textfelder. Sie werden automatisch ersetzt, sobald du das Feld verlässt, sowie im Druck und PDF. Beim Bearbeiten siehst du den Platzhalter selbst.</p>
+      <div class="form-grid">
+        <label>Firma {company}<input name="company"></label>
+        <label>Beruf / Stelle {job_name}<input name="job" placeholder="z. B. Softwareentwickler"></label>
+      </div>
+      <p>Weitere Platzhalter aus deinen Angaben: <code>{name}</code> <code>{first_name}</code> <code>{last_name}</code> <code>{email}</code> <code>{phone}</code> <code>{city}</code> <code>{street}</code> <code>{contact}</code> (Ansprechpartner) <code>{date}</code>. Deutsch: <code>{firma}</code> <code>{beruf}</code> <code>{vorname}</code> <code>{nachname}</code> <code>{datum}</code>. Ist die Firma leer, wird sie aus der Empfängeradresse genommen. Leere Platzhalter bleiben sichtbar.</p>
+      <div class="dialog-actions"><button type="button" class="button secondary" data-close-dialog="placeholder-dialog">Abbrechen</button><button class="button primary">Übernehmen</button></div>
+    </form>
+  </dialog>
+  <dialog id="versions-dialog">
+    <div class="dialog-content">
+      <div class="dialog-heading"><h2>Versionen</h2><button type="button" class="icon-button" data-close-dialog="versions-dialog" aria-label="Schließen">✕</button></div>
+      <p>Zwischenstände werden automatisch nur im Arbeitsspeicher gehalten (maximal 40). Mit F5, Neuladen oder Schließen des Tabs sind sie weg. Nutze die Sicherung, um dauerhaft zu speichern.</p>
+      <p id="version-empty" hidden>Noch keine Versionen.</p>
+      <ul id="version-list" class="version-list"></ul>
+      <div class="dialog-actions"><button type="button" id="save-version" class="button secondary">Aktuellen Stand als Version speichern</button><button type="button" class="button primary" data-close-dialog="versions-dialog">Schließen</button></div>
+    </div>
+  </dialog>
   <dialog id="download-dialog">
     <form id="download-form" class="dialog-content">
       <div class="dialog-heading"><h2>PDF herunterladen</h2><button type="button" class="icon-button" data-close-dialog="download-dialog" aria-label="Schließen">✕</button></div>
-      <p>Die PDFs werden lokal aus der Dokumentansicht als Bildseiten erzeugt; Text ist darin nicht auswählbar. Bitte anschließend Seitenumbrüche und das Brieffenster prüfen.</p>
+      <p>Die PDFs werden lokal als Vektor-PDF mit echtem, auswählbarem Text erzeugt und übernehmen Farben, Schrift, Trennlinien, Foto und Bewertungspunkte. Als Schrift dienen Standardschriften (Arial/Verdana als Helvetica, Georgia als Times). Bitte Seitenumbrüche prüfen.</p>
       <div class="form-grid">
         <label>Ausgabe<select name="mode"><option value="combined">Ein gemeinsames PDF</option><option value="separate">Getrennte PDFs als ZIP</option></select></label>
         <label>Name für Dateinamen<input name="name" required placeholder="Vorname_Nachname"></label>
