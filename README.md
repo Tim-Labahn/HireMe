@@ -8,14 +8,10 @@ Mit installiertem Node.js im Projektordner `npm start` ausführen und **http://1
 
 Die `index.html` lässt sich auch direkt öffnen. Der PDF-Import nutzt dabei eine lokal mitgelieferte Variante von PDF.js; manche Browser oder PDF-Schriften können bei `file:` trotzdem Einschränkungen haben. In diesem Fall den lokalen Server oder GitHub Pages verwenden. Browserdaten sind je nach Adresse getrennt: Unter `file:`, `127.0.0.1` und GitHub Pages werden jeweils eigene Daten gespeichert. Über gespeicherte Vorlagen lassen sie sich übertragen.
 
-## GitHub Pages
+## Online Nutzen
 
-1. Alle Projektdateien einschließlich des Ordners `vendor` in ein GitHub-Repository hochladen. `node_modules` wird nicht benötigt.
-2. Unter **Settings → Pages** bei **Build and deployment** die Quelle **Deploy from a branch** wählen.
-3. Den gewünschten Branch und den Ordner `/ (root)` auswählen und speichern.
-4. Die angezeigte Pages-Adresse öffnen, sobald die Veröffentlichung abgeschlossen ist. Ein Build-Schritt ist nicht nötig.
+Das project ist Via Github Pages erreichbar unter HireMe.timlabahn.de
 
-GitHub Pages veröffentlicht alle Dateien der gewählten Veröffentlichungsquelle öffentlich. Persönliche Unterlagen, JSON-Sicherungen, Fotos, Zugangsdaten und andere private Dateien dürfen nicht ins Repository oder den Pages-Ordner aufgenommen werden. `.gitignore` schließt einige gängige Dateitypen vorsorglich aus, schützt aber nicht vor bereits getrackten Dateien, anderen Endungen, `git add -f` oder früheren Commits. Vor jeder Veröffentlichung Dateiliste und Git-Historie sorgfältig prüfen.
 
 ## Bearbeiten und drucken
 
