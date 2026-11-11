@@ -28,6 +28,7 @@ dialog{width:min(980px,95vw);max-height:90vh;border:0;border-radius:14px;padding
 .editor-flow .resume-entry,.editor-flow .work-entry{break-inside:auto}
 .editor-page-decoration{position:absolute;left:0;width:210mm;height:297mm;background:#fff;box-shadow:0 8px 35px #29294f18;pointer-events:none;border-bottom:1px solid #e6e5ef}
 .editor-page-decoration:after{content:"";position:absolute;bottom:20mm;left:20mm;right:20mm;border-top:1px dashed #d2d2d2}
+.editor-page-number{position:absolute;bottom:8mm;right:20mm;color:#777;font-size:9pt}
 }
 @media screen and (max-width:1100px){
 .editor-layout{flex-direction:column;align-items:stretch}.tools{position:static;width:auto;max-height:none;flex-direction:row;flex-wrap:wrap}.page-preview{order:0;position:static;width:100%}.document-area{width:100%}
@@ -41,3 +42,9 @@ dialog{width:min(980px,95vw);max-height:90vh;border:0;border-radius:14px;padding
 .paper .add-entry{font-size:9px;padding:1px 5px}
 .paper .section-actions .icon-button,.paper .entry-actions .icon-button{font-size:9px;padding:1px 4px}
 }
+.format-toolbar{display:flex;flex-direction:column;gap:7px;color:#646579;font-size:11px}
+.format-toolbar strong{font-size:11px}.format-toolbar label{display:flex;align-items:center;gap:6px}.format-toolbar small{line-height:1.35;color:#858698}
+.format-buttons{display:flex;gap:5px}.format-buttons .icon-button{min-width:30px}
+.format-toolbar-editor{position:sticky;top:0;z-index:4;flex-direction:row;align-items:center;flex-wrap:wrap;width:max-content;max-width:100%;margin:0 auto 10px;padding:8px 10px;border:1px solid #e6e6ef;border-radius:8px;background:#fff;box-shadow:0 3px 12px #29294f12}
+.format-toolbar-editor select{max-width:115px}.format-toolbar-editor input[type=color]{width:30px;height:26px}
+@media print{.format-toolbar{display:none!important}}

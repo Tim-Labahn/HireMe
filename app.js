@@ -33,12 +33,40 @@ function takeSnapshot(label = "Bearbeitung") {
 function scheduleSnapshot() { clearTimeout(snapshotTimer); snapshotTimer = setTimeout(() => takeSnapshot(), 1500); }
 
 function isRecord(value) { return value !== null && typeof value === "object" && !Array.isArray(value); }
+function parseFormat(input, values, keys) {
+  if (input === undefined) return undefined;
+  if (!isRecord(input)) throw new Error("Ungültige Textformatierung.");
+  const result = {};
+  for (const [key, runs] of Object.entries(input)) {
+    if (!keys.includes(key) || !Array.isArray(runs)) throw new Error("Ungültiges Formatierungsfeld.");
+    let end = 0;
+    result[key] = runs.map(run => {
+      if (!isRecord(run) || !Number.isInteger(run.start) || !Number.isInteger(run.end) || run.start < end || run.end <= run.start || run.end > values[key].length) throw new Error("Ungültiger Formatierungsbereich.");
+      const copy = { start: run.start, end: run.end };
+      for (const [name, value] of Object.entries(run)) {
+        if (name === "start" || name === "end") continue;
+        if (["bold", "italic", "underline"].includes(name) && typeof value === "boolean") copy[name] = value;
+        else if (name === "size" && Number.isInteger(value) && value >= 6 && value <= 36) copy.size = value;
+        else if (name === "color" && typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value)) copy.color = value.toLowerCase();
+        else throw new Error("Ungültiger Textstil.");
+      }
+      end = run.end;
+      return copy;
+    });
+  }
+  return result;
+}
+function copyFormat(input, output, keys) {
+  const format = parseFormat(input.format, output, keys);
+  if (format) output.format = format;
+  return output;
+}
 function parseFields(list) {
   if (list === undefined) return [];
   if (!Array.isArray(list)) throw new Error("Ungültige eigene Felder.");
   return list.map(field => {
     if (!isRecord(field) || typeof field.label !== "string" || typeof field.value !== "string") throw new Error("Ungültiges eigenes Feld.");
-    return { label: field.label, value: field.value };
+    return copyFormat(field, { label: field.label, value: field.value }, ["label", "value"]);
   });
 }
 function parseState(data) {
@@ -51,7 +79,7 @@ function parseState(data) {
   }));
   const profile = strings(data.profile, defaults.profile);
   if (profile.photo && !/^data:image\/(png|jpeg|webp);base64,[a-z0-9+/=]+$/i.test(profile.photo)) throw new Error("Das Fotoformat wird nicht unterstützt.");
-  const letter = strings(data.letter, defaults.letter), design = strings(data.design, defaults.design);
+  const letter = copyFormat(data.letter, strings(data.letter, defaults.letter), ["place", "subject", "body", "closing"]), design = strings(data.design, defaults.design);
   if (!["modern", "classic", "minimal"].includes(design.template) || !["Arial", "Georgia", "Verdana"].includes(design.font) || !/^#[0-9a-f]{6}$/i.test(design.color)) throw new Error("Ungültige Designeinstellungen.");
   for (const key of ["photoWidth", "photoHeight"]) {
     if (!Number.isFinite(data.design[key]) || data.design[key] < 15 || data.design[key] > 70) throw new Error("Ungültige Fotogröße.");
@@ -61,7 +89,7 @@ function parseState(data) {
   const sections = data.sections.map(section => {
     if (!isRecord(section) || typeof section.id !== "string" || !section.id || ids.has(section.id) || typeof section.title !== "string" || ![50, 100].includes(section.width) || !Array.isArray(section.entries)) throw new Error("Ungültiger Lebenslaufabschnitt.");
     ids.add(section.id);
-    return { id: section.id, title: section.title, width: section.width, entries: section.entries.map(entry => {
+    return copyFormat(section, { id: section.id, title: section.title, width: section.width, entries: section.entries.map(entry => {
       if (!isRecord(entry)) throw new Error("Ungültiger Eintrag.");
       const result = strings(entry, { title: "", subtitle: "", date: "", description: "" });
       const fields = parseFields(entry.fields);
@@ -70,16 +98,16 @@ function parseState(data) {
         if (!isRecord(entry.rating) || ![5, 10].includes(entry.rating.max) || !Number.isInteger(entry.rating.value) || entry.rating.value < 1 || entry.rating.value > entry.rating.max) throw new Error("Ungültige Bewertung.");
         result.rating = { max: entry.rating.max, value: entry.rating.value };
       }
-      return result;
-    }) };
+      return copyFormat(entry, result, ["title", "subtitle", "date", "description"]);
+    }) }, ["title"]);
   });
   let portfolio = defaults.portfolio;
   if (data.portfolio !== undefined) {
     if (!isRecord(data.portfolio) || typeof data.portfolio.title !== "string" || !Array.isArray(data.portfolio.entries)) throw new Error("Ungültige Arbeitsproben.");
-    portfolio = { title: data.portfolio.title, entries: data.portfolio.entries.map(entry => {
+    portfolio = copyFormat(data.portfolio, { title: data.portfolio.title, entries: data.portfolio.entries.map(entry => {
       if (!isRecord(entry)) throw new Error("Ungültige Arbeitsprobe.");
-      return strings(entry, { title: "", date: "", description: "", link: "" });
-    }) };
+      return copyFormat(entry, strings(entry, { title: "", date: "", description: "", link: "" }), ["title", "date", "description", "link"]);
+    }) }, ["title"]);
   }
   let recipientDetails = null;
   if (data.recipientDetails !== undefined && data.recipientDetails !== null) {
@@ -142,6 +170,57 @@ function resolve(text) {
   const values = placeholderValues();
   return text.replace(/\{\s*([a-z_]+)\s*\}/gi, (match, key) => values[key.toLowerCase()] || match);
 }
+function formatRecord(group, section, entry, field) {
+  if (group === "letter") return state.letter;
+  if (group === "section") return state.sections[Number(section)];
+  if (group === "entry") return state.sections[Number(section)].entries[Number(entry)];
+  if (group === "entryExtra") return state.sections[Number(section)].entries[Number(entry)].fields[Number(field)];
+  if (group === "extra") return state.extras[Number(field)];
+  if (group === "portfolio") return state.portfolio;
+  if (group === "work") return state.portfolio.entries[Number(entry)];
+  return null;
+}
+function stylesForText(text, runs = []) {
+  const styles = Array.from({ length: text.length }, () => ({}));
+  for (const { start, end, ...style } of runs) for (let i = start; i < Math.min(end, text.length); i++) styles[i] = { ...style };
+  return styles;
+}
+function runsFromStyles(styles) {
+  const runs = [];
+  styles.forEach((style, index) => {
+    if (!Object.keys(style).length) return;
+    const previous = runs[runs.length - 1];
+    if (previous && previous.end === index && JSON.stringify(Object.fromEntries(Object.entries(previous).filter(([key]) => key !== "start" && key !== "end"))) === JSON.stringify(style)) previous.end++;
+    else runs.push({ start: index, end: index + 1, ...style });
+  });
+  return runs;
+}
+function formattedHtml(text, runs, replacePlaceholders = true) {
+  const styles = stylesForText(text, runs), pieces = [];
+  const append = (value, style) => {
+    const css = [];
+    if (style.bold !== undefined) css.push(`font-weight:${style.bold ? "bold" : "normal"}`);
+    if (style.italic !== undefined) css.push(`font-style:${style.italic ? "italic" : "normal"}`);
+    if (style.underline !== undefined) css.push(`text-decoration:${style.underline ? "underline" : "none"}`);
+    if (style.size !== undefined) css.push(`font-size:${style.size}pt`);
+    if (style.color !== undefined) css.push(`color:${style.color}`);
+    pieces.push(css.length ? `<span style="${css.join(";")}">${escapeHtml(value)}</span>` : escapeHtml(value));
+  };
+  for (let i = 0; i < text.length;) {
+    const token = replacePlaceholders && text.slice(i).match(/^\{\s*[a-z_]+\s*\}/i);
+    if (token) {
+      append(resolve(token[0]), styles[i] || {});
+      i += token[0].length;
+      continue;
+    }
+    const style = styles[i] || {}, signature = JSON.stringify(style);
+    let end = i + 1;
+    while (end < text.length && JSON.stringify(styles[end]) === signature && !(replacePlaceholders && text[end] === "{")) end++;
+    append(text.slice(i, end), style);
+    i = end;
+  }
+  return pieces.join("");
+}
 function editable(group, key, placeholder, options = {}) {
   const value = options.value === undefined ? state[group][key] : options.value;
   const tag = options.tag || "span", classes = options.className || "";
@@ -149,7 +228,9 @@ function editable(group, key, placeholder, options = {}) {
   const entry = options.entry === undefined ? "" : ` data-entry="${options.entry}"`;
   const field = options.field === undefined ? "" : ` data-field="${options.field}"`;
   const plain = PLAIN_KEYS.has(key);
-  return `<${tag} class="${classes}" contenteditable="true" role="textbox" spellcheck="${!plain}" lang="de" autocorrect="${plain ? "off" : "on"}" autocapitalize="${plain ? "off" : "sentences"}" aria-label="${escapeHtml(placeholder)}" aria-multiline="${Boolean(options.multiline)}" data-group="${group}" data-key="${key}"${section}${entry}${field} data-placeholder="${escapeHtml(placeholder)}" data-raw="${escapeHtml(value)}"${options.optional && !value ? " hidden" : ""}>${escapeHtml(resolve(value))}</${tag}>`;
+  const record = formatRecord(group, options.section, options.entry, options.field);
+  const runs = record?.format?.[key] || [];
+  return `<${tag} class="${classes}" contenteditable="true" role="textbox" spellcheck="${!plain}" lang="de" autocorrect="${plain ? "off" : "on"}" autocapitalize="${plain ? "off" : "sentences"}" aria-label="${escapeHtml(placeholder)}" aria-multiline="${Boolean(options.multiline)}" data-group="${group}" data-key="${key}"${section}${entry}${field} data-placeholder="${escapeHtml(placeholder)}" data-raw="${escapeHtml(value)}"${options.optional && !value ? " hidden" : ""}>${formattedHtml(value, runs)}</${tag}>`;
 }
 const AUTOCORRECT = {
   nciht: "nicht", nihct: "nicht", udn: "und", dnn: "dann", fuer: "für", ueber: "über", moechte: "möchte", koennen: "können", koennte: "könnte",
@@ -164,10 +245,14 @@ function autocorrect(element, typed) {
   if (typed === " " && /[ \u00A0]$/.test(before)) { node.deleteData(offset - 1, 1); return; }
   const match = before.match(/([A-Za-zÄÖÜäöüß]+)$/);
   if (!match) return;
-  const word = match[1], start = before.length - word.length, prefix = before.slice(0, start);
+  const word = match[1], start = before.length - word.length;
+  const range = document.createRange();
+  range.selectNodeContents(element); range.setEnd(node, start);
+  const prefix = measureEditorText(element, range.cloneContents());
+  if (/\p{L}$/u.test(prefix)) return;
   let fixed = AUTOCORRECT[word.toLowerCase()] || word;
   if (fixed !== word && word[0] !== word[0].toLowerCase()) fixed = fixed[0].toUpperCase() + fixed.slice(1);
-  const sentenceStart = start === 0 || (/[.!?][ \u00A0]+$/.test(prefix) && !/(?:^|\s)\p{L}{1,2}[.!?][ \u00A0]+$/u.test(prefix));
+  const sentenceStart = prefix.length === 0 || (/[.!?][ \u00A0]+$/.test(prefix) && !/(?:^|\s)\p{L}{1,2}[.!?][ \u00A0]+$/u.test(prefix));
   if (element.getAttribute("aria-multiline") === "true" && sentenceStart && /^[a-zäöüß]/.test(fixed)) fixed = fixed[0].toUpperCase() + fixed.slice(1);
   if (fixed !== word) node.replaceData(start, word.length, fixed);
 }
@@ -264,6 +349,7 @@ function renderLetter() {
     <div class="letter-signature">${person("firstName", "Vorname")} ${person("lastName", "Nachname")}</div>`;
 }
 function render() {
+  savedFormatSelection = null;
   const paper = $("#paper"), d = state.design;
   paper.className = `paper template-${d.template}${activeDocument === "letter" ? " letter-paper" : ""}`;
   paper.style.setProperty("--accent", d.color);
@@ -308,6 +394,12 @@ function updateEditorPages() {
     sheet.className = "editor-page-decoration";
     sheet.style.top = `${i * sheetHeight}px`;
     sheet.setAttribute("aria-hidden", "true");
+    if (count > 1) {
+      const number = document.createElement("span");
+      number.className = "editor-page-number";
+      number.textContent = `Seite ${i + 1} von ${count}`;
+      sheet.appendChild(number);
+    }
     paper.prepend(sheet);
   }
 }
@@ -332,12 +424,148 @@ function parseEditedDate(value) {
   const date = new Date(`${iso}T00:00:00Z`);
   return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === iso ? iso : null;
 }
+let savedFormatSelection = null;
+for (const toolbar of document.querySelectorAll(".format-toolbar")) {
+  toolbar.append($("#format-toolbar-template").content.cloneNode(true));
+}
+function supportsFormatting(element) {
+  return Boolean(element && element.matches("#paper [contenteditable]") && !(element.dataset.group === "letter" && element.dataset.key === "date"));
+}
+function measureEditorText(element, contents) {
+  const clone = element.cloneNode(false);
+  clone.removeAttribute("id");
+  clone.setAttribute("contenteditable", "false");
+  clone.setAttribute("aria-hidden", "true");
+  clone.style.cssText = "position:fixed;left:-10000px;top:0;opacity:0;pointer-events:none;white-space:pre-wrap;width:1000px;text-transform:none!important";
+  clone.append(contents);
+  document.body.append(clone);
+  const text = clone.innerText.replace(/\r/g, "").replace(/\u00a0/g, " ");
+  clone.remove();
+  return text;
+}
+function rangeTextLength(element, node, offset) {
+  const range = document.createRange();
+  range.selectNodeContents(element);
+  range.setEnd(node, offset);
+  return measureEditorText(element, range.cloneContents()).length;
+}
+function editorText(element) {
+  const range = document.createRange();
+  range.selectNodeContents(element);
+  return measureEditorText(element, range.cloneContents()).replace(/\n+$/, "");
+}
+function readInlineStyles(element, text) {
+  const styles = Array.from({ length: text.length }, () => ({}));
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+  while (walker.nextNode()) {
+    const node = walker.currentNode, parents = [];
+    for (let parent = node.parentElement; parent && parent !== element; parent = parent.parentElement) parents.unshift(parent);
+    const style = {};
+    for (const parent of parents) {
+      if (["B", "STRONG"].includes(parent.tagName)) style.bold = true;
+      if (["I", "EM"].includes(parent.tagName)) style.italic = true;
+      if (parent.tagName === "U") style.underline = true;
+      const css = parent.style;
+      if (css.fontWeight) style.bold = css.fontWeight === "bold" || Number(css.fontWeight) >= 600;
+      if (css.fontStyle) style.italic = css.fontStyle === "italic" || css.fontStyle === "oblique";
+      if (css.textDecorationLine || css.textDecoration) style.underline = (css.textDecorationLine || css.textDecoration).includes("underline");
+      const size = css.fontSize.match(/^(\d+)pt$/);
+      if (size && Number(size[1]) >= 6 && Number(size[1]) <= 36) style.size = Number(size[1]);
+      const color = css.color.match(/^rgb\(\s*(\d+),\s*(\d+),\s*(\d+)\s*\)$/);
+      if (color) style.color = `#${color.slice(1).map(part => Number(part).toString(16).padStart(2, "0")).join("")}`;
+    }
+    if (!Object.keys(style).length) continue;
+    const start = rangeTextLength(element, node, 0);
+    const length = node.data.replace(/\r/g, "").length;
+    for (let i = start; i < Math.min(start + length, styles.length); i++) styles[i] = { ...style };
+  }
+  return runsFromStyles(styles);
+}
+document.addEventListener("selectionchange", () => {
+  const selection = window.getSelection();
+  if (!selection.rangeCount || selection.isCollapsed) {
+    if (supportsFormatting(document.activeElement)) savedFormatSelection = null;
+    return;
+  }
+  const range = selection.getRangeAt(0), element = (range.startContainer.nodeType === Node.ELEMENT_NODE ? range.startContainer : range.startContainer.parentElement).closest("[contenteditable]");
+  if (!supportsFormatting(element) || !element.contains(range.endContainer)) return;
+  const start = rangeTextLength(element, range.startContainer, range.startOffset);
+  const end = rangeTextLength(element, range.endContainer, range.endOffset);
+  if (end > start) savedFormatSelection = { element, start, end };
+});
+function selectFormattedText(element, start, end) {
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT), nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  const point = offset => {
+    for (const node of nodes) {
+      if (offset <= node.length) return [node, offset];
+      offset -= node.length;
+    }
+    return nodes.length ? [nodes[nodes.length - 1], nodes[nodes.length - 1].length] : [element, 0];
+  };
+  const [startNode, startOffset] = point(start), [endNode, endOffset] = point(end);
+  const range = document.createRange();
+  range.setStart(startNode, startOffset); range.setEnd(endNode, endOffset);
+  element.focus();
+  const selection = window.getSelection();
+  selection.removeAllRanges(); selection.addRange(range);
+}
+function applyTextFormat(property, value) {
+  const selected = savedFormatSelection;
+  if (!selected || !selected.element.isConnected) {
+    message = "Bitte zuerst Text in einem Dokumentfeld markieren."; showStatus(); return;
+  }
+  const element = selected.element, { group, key, section, entry, field } = element.dataset;
+  const record = formatRecord(group, section, entry, field), text = element.dataset.raw;
+  const styles = stylesForText(text, record.format?.[key]);
+  const start = Math.min(selected.start, text.length), end = Math.min(selected.end, text.length);
+  if (end <= start) { message = "Bitte zuerst Text in einem Dokumentfeld markieren."; showStatus(); return; }
+  if (["bold", "italic", "underline"].includes(property)) {
+    const computed = getComputedStyle(element);
+    const fallback = property === "bold" ? Number(computed.fontWeight) >= 600 : property === "italic" ? computed.fontStyle === "italic" : computed.textDecorationLine.includes("underline");
+    value = !(styles[start][property] ?? fallback);
+  }
+  for (let i = start; i < end; i++) {
+    if (property === "reset") styles[i] = {};
+    else styles[i][property] = value;
+  }
+  record.format ||= {};
+  record.format[key] = runsFromStyles(styles);
+  element.innerHTML = formattedHtml(text, record.format[key], false);
+  selectFormattedText(element, start, end);
+  savedFormatSelection = { element, start, end };
+  message = ""; save(); scheduleEditorPages();
+}
+for (const toolbar of document.querySelectorAll(".format-toolbar")) {
+  toolbar.addEventListener("mousedown", event => { if (event.target.closest("button")) event.preventDefault(); });
+  toolbar.addEventListener("click", event => {
+    const button = event.target.closest("[data-format]");
+    if (button) applyTextFormat(button.dataset.format);
+    if (event.target.closest("[data-apply-color]")) applyTextFormat("color", toolbar.querySelector("[data-format-color]").value);
+  });
+  toolbar.addEventListener("change", event => {
+    if (event.target.matches("[data-format-size]") && event.target.value) {
+      applyTextFormat("size", Number(event.target.value));
+      event.target.value = "";
+    }
+    if (event.target.matches("[data-format-color]")) applyTextFormat("color", event.target.value);
+  });
+}
 $("#paper").addEventListener("input", event => {
   const element = event.target.closest("[contenteditable]");
   if (!element) return;
   const { group, key, section, entry, field } = element.dataset;
   if (event.inputType === "insertText" && event.data && /^[ .,!?;:]$/.test(event.data) && !PLAIN_KEYS.has(key)) autocorrect(element, event.data);
-  const value = element.innerText.replace(/\r/g, "").replace(/\u00A0/g, " ").replace(/\n+$/, "");
+  const value = editorText(element);
+  const record = formatRecord(group, section, entry, field);
+  if (record && !(group === "letter" && key === "date")) {
+    const runs = readInlineStyles(element, value);
+    if (runs.length || record.format?.[key]) {
+      record.format ||= {};
+      record.format[key] = runs;
+    }
+  }
+  savedFormatSelection = null;
   if (!value) element.textContent = "";
   element.dataset.raw = value;
   if (group === "profile") {
@@ -357,6 +585,11 @@ $("#paper").addEventListener("input", event => {
   save(); updateAddressWarning(); scheduleEditorPages();
 });
 $("#paper").addEventListener("keydown", event => {
+  if ((event.ctrlKey || event.metaKey) && !event.altKey && ["b", "i", "u"].includes(event.key.toLowerCase()) && supportsFormatting(event.target)) {
+    event.preventDefault();
+    applyTextFormat({ b: "bold", i: "italic", u: "underline" }[event.key.toLowerCase()]);
+    return;
+  }
   if ((event.key === "Enter" || event.key === " ") && event.target.matches("[data-open-profile], [data-open-recipient]")) {
     event.preventDefault(); event.target.click(); return;
   }
@@ -370,14 +603,20 @@ $("#paper").addEventListener("keydown", event => {
 });
 $("#paper").addEventListener("focusin", event => {
   const element = event.target;
-  if (element.isContentEditable && element.dataset.raw !== undefined && element.textContent !== element.dataset.raw) element.textContent = element.dataset.raw;
+  if (savedFormatSelection && savedFormatSelection.element !== element) savedFormatSelection = null;
+  if (element.isContentEditable && element.dataset.raw !== undefined && resolve(element.dataset.raw) !== element.dataset.raw) {
+    const record = formatRecord(element.dataset.group, element.dataset.section, element.dataset.entry, element.dataset.field);
+    element.innerHTML = formattedHtml(element.dataset.raw, record?.format?.[element.dataset.key], false);
+  }
 });
 $("#paper").addEventListener("focusout", event => {
   const element = event.target;
   if (element.isContentEditable && element.dataset.raw !== undefined) {
     const shown = resolve(element.dataset.raw);
-    if (element.textContent !== shown) element.textContent = shown;
-    document.querySelectorAll('[contenteditable][data-raw*="{"]').forEach(other => { if (other !== element) { const text = resolve(other.dataset.raw); if (other.textContent !== text) other.textContent = text; } });
+    if (shown !== element.dataset.raw) {
+      const record = formatRecord(element.dataset.group, element.dataset.section, element.dataset.entry, element.dataset.field);
+      element.innerHTML = formattedHtml(element.dataset.raw, record?.format?.[element.dataset.key]);
+    }
   }
   if (element.matches('[contenteditable][data-key="subtitle"], [contenteditable][data-group="entry"][data-key="date"], [contenteditable][data-group="entry"][data-key="description"], [contenteditable][data-group="work"][data-key="date"], [contenteditable][data-group="work"][data-key="description"], [contenteditable][data-group="work"][data-key="link"]') && !element.innerText.trim()) element.hidden = true;
   scheduleEditorPages();
@@ -522,6 +761,7 @@ $("#subject-form").addEventListener("submit", event => {
   const kind = form.elements.kind.value;
   state.vars.job = job;
   state.letter.subject = `Bewerbung um ${kind === "Praktikum" ? "das" : "die"} ${kind} als {job_name}${form.elements.start.value ? ` ab ${formattedDate(form.elements.start.value)}` : ""}`;
+  if (state.letter.format) delete state.letter.format.subject;
   message = ""; save(); render(); $("#subject-dialog").close();
 });
 $("#privacy-settings").addEventListener("click", () => {
@@ -796,7 +1036,10 @@ $("#apply-import").addEventListener("click", () => {
   if ($("#pdf-type").value === "resume") {
     if (pdfProposal.sections.length) state.sections = pdfProposal.sections.map(section => ({ ...section, id: uid() }));
   } else {
-    for (const [key, value] of Object.entries(pdfProposal.letter)) if (value) state.letter[key] = value;
+    for (const [key, value] of Object.entries(pdfProposal.letter)) if (value) {
+      state.letter[key] = value;
+      if (state.letter.format) delete state.letter.format[key];
+    }
   }
   activeDocument = $("#pdf-type").value; loadBlocked = false; message = ""; save(); render(); $("#import-dialog").close("applied");
 });
@@ -837,9 +1080,11 @@ async function renderPdfLayout(type, fontScale = 1) {
   const pdf = await PDFLib.PDFDocument.create(), d = state.design, serif = d.font === "Georgia";
   const reg = await pdf.embedFont(serif ? PDFLib.StandardFonts.TimesRoman : PDFLib.StandardFonts.Helvetica);
   const bold = await pdf.embedFont(serif ? PDFLib.StandardFonts.TimesRomanBold : PDFLib.StandardFonts.HelveticaBold);
+  const italic = await pdf.embedFont(serif ? PDFLib.StandardFonts.TimesRomanItalic : PDFLib.StandardFonts.HelveticaOblique);
+  const boldItalic = await pdf.embedFont(serif ? PDFLib.StandardFonts.TimesRomanBoldItalic : PDFLib.StandardFonts.HelveticaBoldOblique);
   const accent = pdfColor(d.color), rgbHex = hex => pdfColor(hex);
   const dark = rgbHex("#30313c"), muted = rgbHex("#777777"), subtle = rgbHex("#686976"), line = rgbHex("#e5e5e9");
-  const sets = new Map([[reg, new Set(reg.getCharacterSet())], [bold, new Set(bold.getCharacterSet())]]);
+  const sets = new Map([reg, bold, italic, boldItalic].map(font => [font, new Set(font.getCharacterSet())]));
   const clean = (font, text) => Array.from(String(text).normalize("NFC").replace(/\t/g, "  ").replace(/[\u00A0\u2007\u202F]/g, " ").replace(/[\u2010-\u2015]/g, "-")).map(ch => (ch === "\n" || sets.get(font).has(ch.codePointAt(0)) ? ch : "?")).join("");
   const measure = (font, size, text) => font.widthOfTextAtSize(text, size);
   const wrap = (font, size, text, width) => {
@@ -871,9 +1116,89 @@ async function renderPdfLayout(type, fontScale = 1) {
     const items = parts.flat(Infinity).filter(Boolean);
     return { items, h: items.reduce((sum, item) => sum + item.h, 0), draw(page, x, top) { let t = top; for (const item of items) { item.draw(page, x, t); t += item.h; } } };
   };
-  const textLines = (font, size, color, text, w, { lineH = size * 1.45, align = "left" } = {}) => {
-    const value = resolve(text || "");
+  const richRuns = (font, size, color, text, runs, uppercase = false, suffix = "") => {
+    const raw = text || "", pieces = [], pattern = /\{\s*([a-z_]+)\s*\}/gi;
+    let offset = 0, match;
+    const styleAt = pos => runs.find(run => run.start <= pos && pos < run.end) || {};
+    const add = (value, style) => {
+      const isBold = style.bold === undefined ? font === bold : style.bold;
+      const face = isBold ? (style.italic ? boldItalic : bold) : (style.italic ? italic : reg);
+      const pt = (Number.isInteger(style.size) && style.size >= 6 && style.size <= 36 ? style.size : size) * fontScale;
+      const ink = typeof style.color === "string" && /^#[0-9a-f]{6}$/i.test(style.color) ? rgbHex(style.color) : color;
+      const transformed = uppercase ? value.toUpperCase() : value;
+      const cleaned = clean(face, transformed);
+      if (cleaned) pieces.push({ text: cleaned, font: face, size: pt, color: ink, underline: style.underline === true });
+    };
+    const addRaw = (start, end) => {
+      let pos = start;
+      while (pos < end) {
+        const style = styleAt(pos);
+        let next = end;
+        for (const run of runs) {
+          if (run.start > pos && run.start < next) next = run.start;
+          if (run.end > pos && run.end < next) next = run.end;
+        }
+        add(raw.slice(pos, next), style); pos = next;
+      }
+    };
+    while ((match = pattern.exec(raw))) {
+      addRaw(offset, match.index);
+      add(resolve(match[0]), styleAt(match.index));
+      offset = match.index + match[0].length;
+    }
+    addRaw(offset, raw.length);
+    add(suffix, {});
+    return pieces;
+  };
+  const richLines = (font, size, color, text, w, options) => {
+    const pieces = options.pieces || richRuns(font, size, color, text, options.runs, options.uppercase, options.suffix);
+    const glyphs = pieces.flatMap(piece => Array.from(piece.text, ch => ({ ...piece, text: ch, width: ch === "\n" ? 0 : measure(piece.font, piece.size, ch) })));
+    const lines = []; let row = [], rowWidth = 0, word = [], wordWidth = 0, space = null;
+    const pushRow = () => { lines.push(row); row = []; rowWidth = 0; };
+    const flushWord = () => {
+      if (!word.length) return;
+      if (row.length && rowWidth + (space ? space.width : 0) + wordWidth > w) pushRow();
+      if (row.length && space) { row.push(space); rowWidth += space.width; }
+      for (const glyph of word) {
+        if (row.length && rowWidth + glyph.width > w) pushRow();
+        row.push(glyph); rowWidth += glyph.width;
+      }
+      word = []; wordWidth = 0; space = null;
+    };
+    for (const glyph of glyphs) {
+      if (glyph.text === "\n") { flushWord(); pushRow(); space = null; }
+      else if (glyph.text === " ") { flushWord(); if (row.length && !space) space = glyph; }
+      else { word.push(glyph); wordWidth += glyph.width; }
+    }
+    flushWord(); pushRow();
+    return lines.map(row => {
+      const lineH = Math.max(options.lineH * fontScale, ...row.map(glyph => glyph.size * options.lineH / size));
+      const groups = [];
+      for (const glyph of row) {
+        const prev = groups[groups.length - 1];
+        if (prev && prev.font === glyph.font && prev.size === glyph.size && prev.color === glyph.color && prev.underline === glyph.underline) {
+          prev.text += glyph.text;
+        } else groups.push({ ...glyph });
+      }
+      for (const group of groups) group.width = measure(group.font, group.size, group.text);
+      const width = groups.reduce((sum, group) => sum + group.width, 0);
+      return { h: lineH, width, draw(page, x, top) {
+        let cursor = options.align === "right" ? x + w - width : x;
+        for (const group of groups) {
+          drawLine(page, group.font, group.size, group.color, group.text, cursor, top, lineH);
+          if (group.underline) {
+            const y = PAGE_H - top - (lineH - group.size) / 2 - group.size * 0.85 - group.size * 0.1;
+            page.drawLine({ start: { x: cursor, y }, end: { x: cursor + group.width, y }, thickness: Math.max(0.5, group.size / 16), color: group.color });
+          }
+          cursor += group.width;
+        }
+      } };
+    });
+  };
+  const textLines = (font, size, color, text, w, { lineH = size * 1.45, align = "left", runs, uppercase = false, suffix = "" } = {}) => {
+    const value = (uppercase ? resolve(text || "").toUpperCase() : resolve(text || "")) + suffix;
     if (!value.trim()) return [];
+    if (runs && runs.length) return richLines(font, size, color, text, w, { lineH, align, runs, uppercase, suffix });
     size *= fontScale;
     lineH *= fontScale;
     return wrap(font, size, value, w).map(lineText => ({ h: lineH, draw(page, x, top) {
@@ -908,14 +1233,19 @@ async function renderPdfLayout(type, fontScale = 1) {
     } }));
   };
   const customField = (field, w) => {
-    const label = field.label.trim() ? `${resolve(field.label)}:` : "", value = resolve(field.value || "");
+    const label = field.label.trim() ? field.label : "", value = field.value || "";
     if (!label && !value.trim()) return null;
-    return stack([textLines(bold, 10, dark, label, w), textLines(reg, 10, dark, value, w)]);
+    const labelRuns = field.format?.label, valueRuns = field.format?.value;
+    return stack([
+      labelRuns?.length ? textLines(bold, 10, dark, label, w, { runs: labelRuns, suffix: label ? ":" : "" }) : textLines(bold, 10, dark, label ? `${resolve(label)}:` : "", w),
+      textLines(reg, 10, dark, valueRuns?.length ? value : resolve(value), w, { runs: valueRuns })
+    ]);
   };
-  const titleDateRow = (title, date, w, titleFont, titleSize, titleColor) => {
-    const dateText = resolve(date || ""), dateW = dateText ? Math.min(measure(reg, 9 * fontScale, clean(reg, dateText)), w * 0.4) : 0;
-    const titleLines = textLines(titleFont, titleSize, titleColor, title, w - (dateW ? dateW + 10 : 0), { lineH: titleSize * 1.45 });
-    const dateLines = dateW ? textLines(reg, 9, muted, dateText, w * 0.4, { lineH: 13, align: "right" }) : [];
+  const titleDateRow = (title, date, w, titleFont, titleSize, titleColor, format) => {
+    const dateText = resolve(date || "");
+    const dateLines = dateText ? textLines(reg, 9, muted, format?.date?.length ? date : dateText, w * 0.4, { lineH: 13, align: "right", runs: format?.date }) : [];
+    const dateW = dateText ? (format?.date?.length ? Math.min(Math.max(...dateLines.map(item => item.width || 0)), w * 0.4) : Math.min(measure(reg, 9 * fontScale, clean(reg, dateText)), w * 0.4)) : 0;
+    const titleLines = textLines(titleFont, titleSize, titleColor, title, w - (dateW ? dateW + 10 : 0), { lineH: titleSize * 1.45, runs: format?.title });
     return stack(Array.from({ length: Math.max(titleLines.length, dateLines.length) }, (_, i) => ({
       h: Math.max(titleLines[i]?.h || 0, dateLines[i]?.h || 0),
       draw(page, x, top) { if (titleLines[i]) titleLines[i].draw(page, x, top); if (dateLines[i]) dateLines[i].draw(page, x + w * 0.6, top); }
@@ -929,18 +1259,19 @@ async function renderPdfLayout(type, fontScale = 1) {
     drawLine(page, reg, 9, muted, `${rating.value}/${rating.max}`, x + 4 + rating.max * 9.5 + 4, top, 15);
   } } : null;
   const resumeEntry = (entry, w) => stack([
-    titleDateRow(entry.title, entry.date, w, bold, 10, dark),
-    textBlock(reg, 10, subtle, entry.subtitle, w),
-    entry.description && entry.description.trim() ? [gap(3), textBlock(reg, 10, dark, entry.description, w)] : null,
+    titleDateRow(entry.title, entry.date, w, bold, 10, dark, entry.format),
+    textBlock(reg, 10, subtle, entry.subtitle, w, { runs: entry.format?.subtitle }),
+    entry.description && entry.description.trim() ? [gap(3), textBlock(reg, 10, dark, entry.description, w, { runs: entry.format?.description })] : null,
     (entry.fields || []).map(field => customField(field, w)),
     ratingBlock(entry.rating, w),
     gap(8)
   ]);
   const sectionBlocks = (section, w) => {
     const entries = section.entries.filter(entryHasContent).map(entry => resumeEntry(entry, w));
-    const size = d.template === "classic" ? 13 : 11, title = d.template === "modern" ? resolve(section.title).toUpperCase() : resolve(section.title);
+    const size = d.template === "classic" ? 13 : 11, formatted = section.format?.title?.length;
+    const title = formatted ? section.title : (d.template === "modern" ? resolve(section.title).toUpperCase() : resolve(section.title));
     const heading = stack([
-      textBlock(bold, size, accent, title, w, { lineH: size * 1.45 }), gap(5),
+      textBlock(bold, size, accent, title, w, { lineH: size * 1.45, runs: section.format?.title, uppercase: formatted && d.template === "modern" }), gap(5),
       d.template === "minimal" ? null : rule(w, 0.75, line), gap(d.template === "minimal" ? 5 : 7.5)
     ]);
     return entries.length ? [stack([heading, entries[0]]), ...entries.slice(1), gap(14)] : [];
@@ -987,8 +1318,24 @@ async function renderPdfLayout(type, fontScale = 1) {
     const photoW = p.photo ? d.photoWidth * MM : 0, photoH = p.photo ? d.photoHeight * MM : 0;
     if (p.photo) photoImageRef = await pdf.embedJpg(await photoJpeg(p.photo, d.photoWidth, d.photoHeight));
     const leftW = CONTENT_W - (p.photo ? photoW + 20 : 0);
-    const contact = inline([p.street, p.city, p.email, p.phone, p.website].map(resolve).filter(value => value.trim()).map(text => ({ text }))
-      .concat(state.extras.filter(fieldHasContent).map(field => ({ label: field.label.trim() ? `${resolve(field.label)}: ` : "", text: resolve(field.value) }))), leftW, 9, muted, 10.5, 13);
+    const extras = state.extras.filter(fieldHasContent);
+    let contact;
+    if (extras.some(field => field.format?.label?.length || field.format?.value?.length)) {
+      const pieces = [];
+      const appendGap = () => { if (pieces.length) pieces.push(...richRuns(reg, 9, muted, "   ", [])); };
+      for (const text of [p.street, p.city, p.email, p.phone, p.website].filter(value => resolve(value).trim())) {
+        appendGap(); pieces.push(...richRuns(reg, 9, muted, text, []));
+      }
+      for (const field of extras) {
+        appendGap();
+        if (field.label.trim()) pieces.push(...richRuns(bold, 9, muted, field.label, field.format?.label || [], false, ": "));
+        pieces.push(...richRuns(reg, 9, muted, field.value, field.format?.value || []));
+      }
+      contact = richLines(reg, 9, muted, "", leftW, { lineH: 13, align: "left", pieces });
+    } else {
+      contact = inline([p.street, p.city, p.email, p.phone, p.website].map(resolve).filter(value => value.trim()).map(text => ({ text }))
+        .concat(extras.map(field => ({ label: field.label.trim() ? `${resolve(field.label)}: ` : "", text: resolve(field.value) }))), leftW, 9, muted, 10.5, 13);
+    }
     const left = stack([
       textBlock(bold, 26, rgbHex("#252633"), name, leftW, { lineH: 29 }), gap(4),
       textBlock(bold, 12, accent, p.headline, leftW, { lineH: 17 }),
@@ -1025,22 +1372,24 @@ async function renderPdfLayout(type, fontScale = 1) {
     const dateLine = [resolve(l.place), formattedDate(l.date)].filter(Boolean).join(", ");
     const subjectColor = d.template === "minimal" ? dark : accent;
     full([
-      textBlock(reg, 10, dark, dateLine, CONTENT_W, { align: "right" }), gap(10 * MM),
-      textBlock(bold, d.template === "classic" ? 11 : 10, subjectColor, l.subject, CONTENT_W),
+      l.format?.place?.length
+        ? textBlock(reg, 10, dark, l.place, CONTENT_W, { align: "right", runs: l.format.place, suffix: l.place && formattedDate(l.date) ? `, ${formattedDate(l.date)}` : formattedDate(l.date) || "" })
+        : textBlock(reg, 10, dark, dateLine, CONTENT_W, { align: "right" }), gap(10 * MM),
+      textBlock(bold, d.template === "classic" ? 11 : 10, subjectColor, l.subject, CONTENT_W, { runs: l.format?.subject }),
       d.template === "modern" && l.subject.trim() ? [gap(4), rule(CONTENT_W, 0.75, accent)] : null, gap(8 * MM),
       textBlock(reg, 10, dark, l.salutation, CONTENT_W), gap(5 * MM),
-      textLines(reg, 10, dark, l.body, CONTENT_W, { lineH: 16 }), gap(8 * MM),
-      textBlock(reg, 10, dark, l.closing, CONTENT_W), gap(12 * MM),
+      textLines(reg, 10, dark, l.body, CONTENT_W, { lineH: 16, runs: l.format?.body }), gap(8 * MM),
+      textBlock(reg, 10, dark, l.closing, CONTENT_W, { runs: l.format?.closing }), gap(12 * MM),
       textBlock(reg, 10, dark, name, CONTENT_W)
     ]);
   } else {
-    const header = stack([textBlock(bold, 22, accent, state.portfolio.title, CONTENT_W, { lineH: 30 }), textBlock(reg, 10, muted, name, CONTENT_W), gap(10.5), rule(CONTENT_W, 1.5, accent), gap(15)]);
+    const header = stack([textBlock(bold, 22, accent, state.portfolio.title, CONTENT_W, { lineH: 30, runs: state.portfolio.format?.title }), textBlock(reg, 10, muted, name, CONTENT_W), gap(10.5), rule(CONTENT_W, 1.5, accent), gap(15)]);
     full([header]);
     for (const entry of state.portfolio.entries.filter(item => [item.title, item.date, item.description, item.link].some(value => value.trim()))) {
       full([stack([
-        titleDateRow(entry.title, entry.date, CONTENT_W, bold, 10, dark),
-        entry.description.trim() ? [gap(3), textBlock(reg, 10, dark, entry.description, CONTENT_W)] : null,
-        textBlock(reg, 9, accent, entry.link, CONTENT_W),
+        titleDateRow(entry.title, entry.date, CONTENT_W, bold, 10, dark, entry.format),
+        entry.description.trim() ? [gap(3), textBlock(reg, 10, dark, entry.description, CONTENT_W, { runs: entry.format?.description })] : null,
+        textBlock(reg, 9, accent, entry.link, CONTENT_W, { runs: entry.format?.link }),
         gap(15)
       ])]);
     }
