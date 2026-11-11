@@ -37,6 +37,8 @@
       <label>Schrift <select id="font"><option>Arial</option><option>Georgia</option><option>Verdana</option></select></label>
       <label>Farbe <input id="color" type="color" aria-label="Akzentfarbe"></label>
       <span class="tool-divider"></span>
+      <div class="format-toolbar" aria-label="Textformatierung links"></div>
+      <span class="tool-divider"></span>
       <button id="edit-profile" class="button secondary">Persönliche Angaben</button>
       <button id="add-section" class="button secondary">+ Abschnitt</button>
       <button id="placeholders" class="button secondary" title="Firma, Beruf und weitere Platzhalter wie {company} und {job_name}">Platzhalter</button>
@@ -53,7 +55,7 @@
       <label id="photo-width-label">Foto Breite <input id="photo-width" type="range" min="15" max="70"><output id="photo-width-value"></output></label>
       <label id="photo-height-label">Höhe <input id="photo-height" type="range" min="15" max="70"><output id="photo-height-value"></output></label>
     </aside>
-      <div class="document-area"><div class="paper-scale"><article id="paper" class="paper" aria-label="Dokument bearbeiten"></article></div></div>
+      <div class="document-area"><div class="format-toolbar format-toolbar-editor" aria-label="Textformatierung am Dokument"></div><div class="paper-scale"><article id="paper" class="paper" aria-label="Dokument bearbeiten"></article></div></div>
       <aside class="page-preview" aria-label="PDF-Seitenvorschau">
         <h2>Seitenvorschau</h2>
         <p>Zeigt die tatsächlichen PDF-Seiten und Seitenumbrüche. Änderungen erscheinen nach kurzer Pause.</p>
@@ -63,6 +65,20 @@
     </div>
     <p class="hint"><span id="storage-indicator"></span> Zum Drucken das gewünschte Dokument auswählen, im Druckdialog A4 und 100 % wählen sowie Kopf- und Fußzeilen ausschalten.</p>
   </main>
+  <template id="format-toolbar-template">
+    <strong>Markierten Text gestalten</strong>
+    <div class="format-buttons">
+      <button type="button" class="icon-button" data-format="bold" title="Fett" aria-label="Fett"><b>F</b></button>
+      <button type="button" class="icon-button" data-format="italic" title="Kursiv" aria-label="Kursiv"><i>K</i></button>
+      <button type="button" class="icon-button" data-format="underline" title="Unterstrichen" aria-label="Unterstrichen"><u>U</u></button>
+      <button type="button" class="icon-button" data-format="reset" title="Formatierung entfernen" aria-label="Formatierung entfernen">↶</button>
+    </div>
+    <label>Größe <select data-format-size aria-label="Schriftgröße">
+      <option value="">Größe wählen</option><option>6</option><option>7</option><option>8</option><option>9</option><option>10</option><option>11</option><option>12</option><option>13</option><option>14</option><option>16</option><option>18</option><option>20</option><option>24</option><option>28</option><option>32</option><option>36</option>
+    </select> pt</label>
+    <label>Textfarbe <input type="color" data-format-color aria-label="Textfarbe" value="#30313c"><button type="button" class="icon-button" data-apply-color>Übernehmen</button></label>
+    <small>Text im Dokument markieren.</small>
+  </template>
   <dialog id="welcome-dialog" aria-labelledby="welcome-title">
     <form id="welcome-form" class="dialog-content">
       <span class="eyebrow">WILLKOMMEN BEI HIREME</span>

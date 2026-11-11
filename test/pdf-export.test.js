@@ -17,11 +17,11 @@ function makeState() {
     extras: [], sections: [], portfolio: { title: "Arbeitsproben", entries: [] }
   };
 }
-function makeRenderer(state) {
+function makeRenderer(state, resolve = value => value) {
   const fieldHasContent = field => Boolean(field.label.trim() || field.value.trim());
   const entryHasContent = entry => [entry.title, entry.subtitle, entry.date, entry.description].some(value => value.trim()) || (entry.fields || []).some(fieldHasContent);
   return new Function("PDFLib", "state", "resolve", "formattedDate", "fieldHasContent", "entryHasContent", `${exportCode}\nreturn {renderPdf, renderPdfLayout};`)(
-    PDFLib, state, value => value, value => value, fieldHasContent, entryHasContent
+    PDFLib, state, resolve, value => value, fieldHasContent, entryHasContent
   );
 }
 async function exportPages(state, type) {
@@ -54,6 +54,117 @@ test("lange Lebenslaufeinträge werden vollständig auf Seiten mit wiederholtem 
     assert.match(page, /Zeile\d+/);
   }
   for (let i = 0; i < 180; i++) assert.match(pages.join(" "), new RegExp(`\\bZeile${i}\\b`));
+});
+
+async function formattedItems(state, type, resolve) {
+  const { bytes } = await makeRenderer(state, resolve).renderPdfLayout(type);
+  const pdfjs = await pdfjsPromise;
+  const doc = await pdfjs.getDocument({ data: new Uint8Array(bytes), useSystemFonts: true }).promise;
+  try {
+    const items = [];
+    for (let i = 1; i <= doc.numPages; i++) {
+      const page = await doc.getPage(i), content = await page.getTextContent();
+      await page.getOperatorList();
+      for (const item of content.items.filter(item => item.str.trim())) {
+        items.push({ ...item, font: page.commonObjs.get(item.fontName).name });
+      }
+    }
+    return items;
+  } finally { await doc.destroy(); }
+}
+
+test("Formatierungen und Platzhalter werden mit Schriftgröße und Schriftart exportiert", async () => {
+  const state = makeState();
+  state.letter.place = "Ort";
+  state.letter.date = "2026-01-02";
+  state.letter.subject = "Normal Kursiv";
+  state.letter.body = "Hallo {name} Ende";
+  state.letter.closing = "Gruss";
+  state.letter.format = {
+    place: [{ start: 0, end: 3, size: 15 }],
+    subject: [{ start: 0, end: 6, bold: false }, { start: 7, end: 13, italic: true, size: 18 }],
+    body: [{ start: 6, end: 12, bold: true, underline: true, color: "#cc0000", size: 20 }],
+    closing: [{ start: 0, end: 5, italic: true }]
+  };
+  const items = await formattedItems(state, "letter", value => value.replace("{name}", "Welt"));
+  const find = value => items.find(item => item.str.trim() === value);
+  assert.match(find("Ort").font, /Helvetica/);
+  assert.equal(find("Ort").transform[0], 15);
+  assert.ok(items.some(item => item.str.includes("2026-01-02")));
+  assert.match(find("Normal").font, /Helvetica$/);
+  assert.match(find("Kursiv").font, /BoldOblique/);
+  assert.equal(find("Kursiv").transform[0], 18);
+  assert.match(find("Welt").font, /Bold/);
+  assert.equal(find("Welt").transform[0], 20);
+  assert.match(find("Gruss").font, /Oblique/);
+});
+
+test("Lebenslauf und Portfolio formatieren alle eigenen Textfelder einschließlich Zusätzen", async () => {
+  const state = makeState();
+  const mark = value => [{ start: 0, end: value.length, size: 17, italic: true }];
+  const field = { label: "Feld", value: "Wert", format: { label: mark("Feld"), value: mark("Wert") } };
+  state.extras = [{ label: "Extra", value: "Inhalt", format: { label: mark("Extra"), value: mark("Inhalt") } }];
+  state.sections = [{ id: "s", title: "straße", width: 100, format: { title: mark("straße") }, entries: [{
+    title: "Titel", date: "Datum", subtitle: "Untertitel", description: "Beschreibung", fields: [field],
+    format: { title: mark("Titel"), date: mark("Datum"), subtitle: mark("Untertitel"), description: mark("Beschreibung") }
+  }] }];
+  state.portfolio = { title: "Portfolio", format: { title: mark("Portfolio") }, entries: [{
+    title: "Projekt", date: "Jahr", description: "Werk", link: "Link",
+    format: { title: mark("Projekt"), date: mark("Jahr"), description: mark("Werk"), link: mark("Link") }
+  }] };
+  for (const [type, values] of [["resume", ["Extra", "Inhalt", "STRASSE", "Titel", "Datum", "Untertitel", "Beschreibung", "Feld", "Wert"]], ["portfolio", ["Portfolio", "Projekt", "Jahr", "Werk", "Link"]]]) {
+    const items = await formattedItems(state, type);
+    for (const value of values) {
+      const item = items.find(item => item.str.includes(value));
+      assert.ok(item, `${type}: ${value}`);
+      assert.equal(item.transform[0], 17, value);
+      assert.match(item.font, /Oblique/, value);
+    }
+  }
+});
+
+test("lange formatierte Texte bleiben über mehrere Seiten vollständig", async () => {
+  const state = makeState();
+  const lines = Array.from({ length: 120 }, (_, i) => `Lang${i}`).join("\n");
+  state.letter.body = lines;
+  state.letter.format = { body: [{ start: 0, end: lines.length, bold: true, size: 24, underline: true }] };
+  const pages = await exportPages(state, "letter");
+  assert.ok(pages.length > 2);
+  for (let i = 0; i < 120; i++) assert.match(pages.join(" "), new RegExp(`\\bLang${i}\\b`));
+});
+
+test("Farbe und Unterstreichung werden als PDF-Zeichenoperationen ausgegeben", async () => {
+  const state = makeState(), pdfjs = await pdfjsPromise;
+  state.letter.body = "Rot Schwarz";
+  state.letter.format = { body: [
+    { start: 0, end: 3, color: "#cc0000", underline: true },
+    { start: 4, end: 11, underline: false }
+  ] };
+  const { bytes } = await makeRenderer(state).renderPdfLayout("letter");
+  const doc = await pdfjs.getDocument({ data: new Uint8Array(bytes), useSystemFonts: true }).promise;
+  try {
+    const ops = await (await doc.getPage(1)).getOperatorList();
+    const strokes = ops.fnArray.filter(op => op === pdfjs.OPS.stroke).length;
+    const colors = ops.fnArray.flatMap((op, i) => op === pdfjs.OPS.setFillRGBColor ? [ops.argsArray[i]] : []);
+    assert.equal(strokes, 1);
+    assert.ok(colors.some(args => args[0] === 204 && args[1] === 0 && args[2] === 0), JSON.stringify(colors));
+  } finally { await doc.destroy(); }
+});
+
+test("UTF-16-Offsets und umgebrochene formatierte Zweispaltentexte", async () => {
+  const state = makeState(), word = "X".repeat(900);
+  const entry = {
+    title: "😀Titel", subtitle: "", date: "", description: word,
+    format: { title: [{ start: 2, end: 7, italic: true, size: 16 }], description: [{ start: 0, end: word.length, bold: true, size: 18 }] }
+  };
+  state.sections = [{ id: "s", title: "Links", width: 50, entries: [entry] }];
+  const items = await formattedItems(state, "resume");
+  const title = items.find(item => item.str.includes("Titel"));
+  assert.equal(title.transform[0], 16);
+  assert.match(title.font, /BoldOblique/);
+  const pages = await exportPages(state, "resume");
+  assert.ok(pages.length > 1);
+  assert.equal((pages.join("").match(/X/g) || []).length, word.length);
 });
 
 test("Schriftanpassung ist begrenzt und spart nur bei knappem Überlauf eine Seite", async () => {
